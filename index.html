@@ -47,13 +47,7 @@
   button{font-family:inherit;}
   #app{display:flex; flex-direction:column; height:100vh; height:100dvh;}
 
-  /* ---------- Setup / Resume screens ---------- */
-  .center-screen{
-    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
-    padding:24px; gap:18px; text-align:center;
-  }
-  .center-screen h1{font-size:26px; margin:0 0 4px;}
-  .center-screen p{color:var(--text-dim); margin:0; font-size:14px; max-width:320px;}
+  /* ---------- Setup screen ---------- */
   .field{width:100%; max-width:320px; display:flex; flex-direction:column; gap:6px; text-align:left;}
   .field label{font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim);}
   .field input{
@@ -268,6 +262,8 @@ let cardTeamSel = 'home';
 let clockTickHandle = null;
 let setupHomeColor = '#22c55e';
 let setupAwayColor = '#f97316';
+let setupHomeName = '';
+let setupAwayName = '';
 
 const EVENT_LABELS = {
   goal:'Goal', point:'Point', twoPt:'2-Pointer', wide:'Wide',
@@ -287,7 +283,7 @@ function defaultState(homeName, awayName, homeColor, awayColor){
     homeColor: homeColor || '#22c55e', awayColor: awayColor || '#f97316',
     half:1, clockRunning:false, clockStart:null, clockElapsed:0,
     half1Duration:null, half2Duration:null, matchEnded:false,
-    events:[], nextId:1
+    events:[], nextId:1, historyId:null
   };
 }
 
@@ -307,19 +303,23 @@ function loadHistory(){
   }catch(e){ return []; }
 }
 function saveHistory(arr){ localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); }
-function archiveCurrentMatch(){
-  if(!state || state.events.length===0) return;
+function saveMatchToHistory(){
   const history = loadHistory();
-  history.unshift({
-    id: Date.now(),
+  if(!state.historyId) state.historyId = Date.now();
+  const record = {
+    id: state.historyId,
     savedAt: new Date().toISOString(),
     state: JSON.parse(JSON.stringify(state))
-  });
+  };
+  const idx = history.findIndex(r=>r.id===state.historyId);
+  if(idx>=0) history[idx] = record; else history.unshift(record);
   saveHistory(history);
+  save();
 }
 
 /* ============================ HELPERS ============================ */
 function getElapsedMs(){
+  if(!state) return 0;
   if(state.clockRunning) return state.clockElapsed + (Date.now() - state.clockStart);
   return state.clockElapsed;
 }
@@ -462,13 +462,43 @@ function startTicker(){
 function stopTicker(){
   if(clockTickHandle){ clearInterval(clockTickHandle); clockTickHandle=null; }
 }
-function newMatch(){
-  if(!confirm('Start a new match? The current match will be saved to Match History and the screen cleared.')) return;
-  archiveCurrentMatch();
+function clearMatch(){
   localStorage.removeItem(STORAGE_KEY);
-  state = null; activeTab='score'; cardTeamSel='home';
+  state = null; activeTab='setup'; cardTeamSel='home';
   stopTicker();
   render();
+}
+function discardMatch(){
+  if(!confirm('Discard this match? All recorded stats will be permanently deleted and cannot be recovered.')) return;
+  if(state.historyId){
+    saveHistory(loadHistory().filter(r=>r.id!==state.historyId));
+  }
+  clearMatch();
+}
+function newMatch(){
+  if(state.events.length===0 || state.historyId){
+    if(!confirm(state.historyId ? 'Start a new match? The current match is saved in Match History.' : 'Start a new match?')) return;
+    clearMatch();
+    return;
+  }
+  showSaveDiscardModal();
+}
+function showSaveDiscardModal(){
+  const overlay = document.createElement('div');
+  overlay.className='overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h2>Save this match?</h2>
+    <p style="color:var(--text-dim); font-size:13px; margin:0 0 14px;">This match hasn't been saved to Match History yet. What would you like to do before starting a new match?</p>
+    <div class="modal-actions" style="flex-direction:column;">
+      <button class="confirm" id="sdSaveBtn">💾 Save &amp; Start New Match</button>
+      <button class="cancel" id="sdDiscardBtn" style="color:var(--neg-border); border-color:var(--neg-border);">🗑 Discard &amp; Start New Match</button>
+      <button class="cancel" id="sdCancelBtn">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('sdSaveBtn').onclick = ()=>{ saveMatchToHistory(); overlay.remove(); clearMatch(); };
+  document.getElementById('sdDiscardBtn').onclick = ()=>{ overlay.remove(); clearMatch(); };
+  document.getElementById('sdCancelBtn').onclick = ()=>overlay.remove();
 }
 function renameTeam(team){
   const current = team==='home' ? state.homeName : state.awayName;
@@ -569,25 +599,6 @@ function bindHistoryActions(container, onChange){
     }
   };
 }
-function showHistoryModal(){
-  const overlay = document.createElement('div');
-  overlay.className='overlay';
-  renderHistoryModal(overlay);
-  document.body.appendChild(overlay);
-}
-function renderHistoryModal(overlay){
-  const history = loadHistory();
-  overlay.innerHTML = `<div class="modal">
-    <h2>Match History</h2>
-    ${renderHistoryRows()}
-    <div class="modal-actions">
-      <button class="cancel" id="closeHistoryBtn">Close</button>
-      ${history.length>0 ? '<button class="confirm clear-history-btn" style="background:var(--neg-border); border-color:var(--neg-border); color:#2a0000;">Delete All</button>' : ''}
-    </div>
-  </div>`;
-  document.getElementById('closeHistoryBtn').onclick = ()=>overlay.remove();
-  bindHistoryActions(overlay, ()=>{ renderHistoryModal(overlay); render(); });
-}
 function showTextModal(title, text){
   const overlay = document.createElement('div');
   overlay.className='overlay';
@@ -614,92 +625,31 @@ function showTextModal(title, text){
 /* ============================ RENDER ============================ */
 function render(){
   const app = document.getElementById('app');
-  if(!state){
-    applyTeamColors(setupHomeColor, setupAwayColor);
-    app.innerHTML = renderSetup();
-    bindSetup();
-    return;
-  }
-  applyTeamColors();
-  app.innerHTML = renderMain();
-  bindMain();
+  if(!state) applyTeamColors(setupHomeColor, setupAwayColor);
+  else applyTeamColors();
+
+  app.innerHTML = renderHeader() + renderContent() + renderTabbar();
+  bindAll();
+
   const clockEl = document.getElementById('sbClock');
   if(clockEl) clockEl.textContent = fmtTime(getElapsedMs());
-  if(state.clockRunning) startTicker(); else stopTicker();
+  if(state && state.clockRunning) startTicker(); else stopTicker();
 }
 
-function renderSetup(){
-  const swatchHtml = (team, current) => PRESET_COLORS.map(c=>
-    `<button class="swatch ${c.toLowerCase()===current.toLowerCase()?'sel':''}" style="background:${c}" data-color="${c}" data-team="${team}" aria-label="${c}"></button>`
-  ).join('');
+function renderHeader(){
+  if(state) return renderScoreboard();
   return `
-  <div class="center-screen">
-    <h1>🏐 Match Tracker</h1>
-    <p>Enter the team names and pick a colour for each side. All data is saved on this device only — no internet needed.</p>
-    <div class="field">
-      <label><span class="home-badge"></span>Home Team</label>
-      <input id="homeNameInput" type="text" placeholder="e.g. St. Mary's" maxlength="24">
-      <div class="color-row">
-        <input type="color" id="homeColorInput" value="${setupHomeColor}">
-        <div class="swatches" id="homeSwatches">${swatchHtml('home', setupHomeColor)}</div>
-      </div>
+  <header id="scoreboard">
+    <div style="text-align:center; padding:10px 0;">
+      <div style="font-size:18px; font-weight:800;">🏐 Match Tracker</div>
+      <div style="font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.1em; margin-top:2px;">${activeTab==='history' ? 'Match History' : 'New Match Setup'}</div>
     </div>
-    <div class="field">
-      <label><span class="away-badge"></span>Opposition</label>
-      <input id="awayNameInput" type="text" placeholder="e.g. Kilcrea" maxlength="24">
-      <div class="color-row">
-        <input type="color" id="awayColorInput" value="${setupAwayColor}">
-        <div class="swatches" id="awaySwatches">${swatchHtml('away', setupAwayColor)}</div>
-      </div>
-    </div>
-    <button class="big-btn" id="startMatchBtn">Start Match</button>
-    ${loadHistory().length>0 ? `<button class="big-btn secondary" id="viewHistorySetupBtn">📜 Match History (${loadHistory().length})</button>` : ''}
-  </div>`;
-}
-function bindSetup(){
-  document.getElementById('startMatchBtn').onclick = ()=>{
-    const h = document.getElementById('homeNameInput').value.trim() || 'Home';
-    const a = document.getElementById('awayNameInput').value.trim() || 'Opposition';
-    const hc = document.getElementById('homeColorInput').value || setupHomeColor;
-    const ac = document.getElementById('awayColorInput').value || setupAwayColor;
-    state = defaultState(h, a, hc, ac);
-    save(); render();
-  };
-  const viewHistorySetupBtn = document.getElementById('viewHistorySetupBtn');
-  if(viewHistorySetupBtn) viewHistorySetupBtn.onclick = showHistoryModal;
-  document.getElementById('homeColorInput').oninput = (e)=>{
-    setupHomeColor = e.target.value;
-    document.querySelectorAll('#homeSwatches .swatch').forEach(s=>s.classList.toggle('sel', s.dataset.color.toLowerCase()===setupHomeColor.toLowerCase()));
-    applyTeamColors(setupHomeColor, setupAwayColor);
-  };
-  document.getElementById('awayColorInput').oninput = (e)=>{
-    setupAwayColor = e.target.value;
-    document.querySelectorAll('#awaySwatches .swatch').forEach(s=>s.classList.toggle('sel', s.dataset.color.toLowerCase()===setupAwayColor.toLowerCase()));
-    applyTeamColors(setupHomeColor, setupAwayColor);
-  };
-  document.querySelectorAll('.swatch').forEach(sw=>{
-    sw.onclick = ()=>{
-      const c = sw.dataset.color, team = sw.dataset.team;
-      if(team==='home'){
-        setupHomeColor = c;
-        document.getElementById('homeColorInput').value = c;
-        document.querySelectorAll('#homeSwatches .swatch').forEach(s=>s.classList.toggle('sel', s===sw));
-      } else {
-        setupAwayColor = c;
-        document.getElementById('awayColorInput').value = c;
-        document.querySelectorAll('#awaySwatches .swatch').forEach(s=>s.classList.toggle('sel', s===sw));
-      }
-      applyTeamColors(setupHomeColor, setupAwayColor);
-    };
-  });
+  </header>`;
 }
 
-function renderMain(){
+function renderScoreboard(){
   const h = teamStats('home'), a = teamStats('away');
   const clockMs = getElapsedMs();
-  const lastEv = state.events[state.events.length-1];
-  let undoLabel = lastEv ? describeEvent(lastEv, true) : 'No actions yet';
-
   return `
   <header id="scoreboard">
     <div class="sb-grid">
@@ -722,21 +672,40 @@ function renderMain(){
         <div class="sb-sub">${a.total} pts${a.twoPt?' · '+a.twoPt+'x2pt':''}</div>
       </div>
     </div>
-  </header>
-  <main id="content">
+  </header>`;
+}
+
+function renderContent(){
+  if(activeTab==='history'){
+    return `<main id="content">${renderHistoryTab()}</main>`;
+  }
+  if(!state){
+    return `<main id="content">${renderSetupContent()}</main>`;
+  }
+  const lastEv = state.events[state.events.length-1];
+  let undoLabel = lastEv ? describeEvent(lastEv, true) : 'No actions yet';
+  return `<main id="content">
     ${activeTab==='score' ? renderScoreTab() : ''}
     ${activeTab==='home' ? renderHomeTab() : ''}
     ${activeTab==='cards' ? renderCardsTab() : ''}
     ${activeTab==='log' ? renderLogTab() : ''}
     ${activeTab==='stats' ? renderStatsTab() : ''}
-    ${activeTab==='history' ? renderHistoryTab() : ''}
-    ${(activeTab!=='log' && activeTab!=='stats' && activeTab!=='history') ? `
+    ${(activeTab!=='log' && activeTab!=='stats') ? `
     <div class="undo-bar">
       <span>Last: ${undoLabel}</span>
       <button id="undoLastBtn" ${state.events.length===0?'disabled':''}>Undo Last</button>
     </div>` : ''}
-  </main>
-  <nav id="tabbar">
+  </main>`;
+}
+
+function renderTabbar(){
+  if(!state){
+    return `<nav id="tabbar">
+      <button data-tab="setup" class="${activeTab!=='history'?'active':''}"><span class="ic">🏐</span>Setup</button>
+      <button data-tab="history" class="${activeTab==='history'?'active':''}"><span class="ic">📜</span>History</button>
+    </nav>`;
+  }
+  return `<nav id="tabbar">
     <button data-tab="score" class="${activeTab==='score'?'active':''}"><span class="ic">⚽</span>Score</button>
     <button data-tab="home" class="${activeTab==='home'?'active':''}"><span class="ic">🛡️</span>Home</button>
     <button data-tab="cards" class="${activeTab==='cards'?'active':''}"><span class="ic">🟨</span>Cards</button>
@@ -744,6 +713,33 @@ function renderMain(){
     <button data-tab="stats" class="${activeTab==='stats'?'active':''}"><span class="ic">📊</span>Stats</button>
     <button data-tab="history" class="${activeTab==='history'?'active':''}"><span class="ic">📜</span>History</button>
   </nav>`;
+}
+
+function renderSetupContent(){
+  const swatchHtml = (team, current) => PRESET_COLORS.map(c=>
+    `<button class="swatch ${c.toLowerCase()===current.toLowerCase()?'sel':''}" style="background:${c}" data-color="${c}" data-team="${team}" aria-label="${c}"></button>`
+  ).join('');
+  return `
+  <div style="max-width:340px; margin:0 auto;">
+    <p style="color:var(--text-dim); font-size:13px; text-align:center; margin:4px 0 18px;">Enter the team names and pick a colour for each side. All data is saved on this device only — no internet needed.</p>
+    <div class="field" style="margin:0 auto 16px;">
+      <label><span class="home-badge"></span>Home Team</label>
+      <input id="homeNameInput" type="text" placeholder="e.g. St. Mary's" maxlength="24" value="${escapeHtml(setupHomeName)}">
+      <div class="color-row">
+        <input type="color" id="homeColorInput" value="${setupHomeColor}">
+        <div class="swatches" id="homeSwatches">${swatchHtml('home', setupHomeColor)}</div>
+      </div>
+    </div>
+    <div class="field" style="margin:0 auto 16px;">
+      <label><span class="away-badge"></span>Opposition</label>
+      <input id="awayNameInput" type="text" placeholder="e.g. Kilcrea" maxlength="24" value="${escapeHtml(setupAwayName)}">
+      <div class="color-row">
+        <input type="color" id="awayColorInput" value="${setupAwayColor}">
+        <div class="swatches" id="awaySwatches">${swatchHtml('away', setupAwayColor)}</div>
+      </div>
+    </div>
+    <button class="big-btn" id="startMatchBtn" style="margin:6px auto 0; display:block;">Start Match</button>
+  </div>`;
 }
 
 function renderScoreTab(){
@@ -895,7 +891,13 @@ function renderStatsTab(){
     <button id="shareLogBtn">📋 Share Event Log</button>
   </div>
 
-  <button class="danger-btn" id="newMatchBtn">Start New Match</button>
+  <div class="section-title">Match Actions</div>
+  <div class="share-row">
+    <button id="saveMatchBtn">💾 Save Match</button>
+    <button id="discardMatchBtn" style="color:var(--neg-border); border-color:var(--neg-border);">🗑 Discard Match</button>
+  </div>
+  <div class="hint" style="margin-top:8px;">${state.historyId ? '✅ Saved to Match History' : '⚠️ Not yet saved — tap "Save Match" to keep these stats in Match History.'}</div>
+  <button class="big-btn secondary" style="max-width:none; margin-top:14px;" id="newMatchBtn">Start New Match</button>
   <div class="hint">Tip: add this page to your Home Screen (browser menu → "Add to Home Screen") for a full-screen, offline app. All data stays on this device.</div>
   `;
 }
@@ -914,11 +916,61 @@ function escapeHtml(str){
 }
 
 /* ============================ BIND EVENTS ============================ */
-function bindMain(){
-  // tab bar
+function bindAll(){
+  // tab bar (works for both setup and main shells)
   document.querySelectorAll('#tabbar button').forEach(btn=>{
     btn.onclick = ()=>{ activeTab = btn.dataset.tab; render(); };
   });
+
+  // ---- Setup screen bindings ----
+  const startMatchBtn = document.getElementById('startMatchBtn');
+  if(startMatchBtn){
+    startMatchBtn.onclick = ()=>{
+      const h = document.getElementById('homeNameInput').value.trim() || 'Home';
+      const a = document.getElementById('awayNameInput').value.trim() || 'Opposition';
+      const hc = document.getElementById('homeColorInput').value || setupHomeColor;
+      const ac = document.getElementById('awayColorInput').value || setupAwayColor;
+      state = defaultState(h, a, hc, ac);
+      activeTab = 'score';
+      save(); render();
+    };
+    document.getElementById('homeNameInput').oninput = (e)=>{ setupHomeName = e.target.value; };
+    document.getElementById('awayNameInput').oninput = (e)=>{ setupAwayName = e.target.value; };
+    document.getElementById('homeColorInput').oninput = (e)=>{
+      setupHomeColor = e.target.value;
+      document.querySelectorAll('#homeSwatches .swatch').forEach(s=>s.classList.toggle('sel', s.dataset.color.toLowerCase()===setupHomeColor.toLowerCase()));
+      applyTeamColors(setupHomeColor, setupAwayColor);
+    };
+    document.getElementById('awayColorInput').oninput = (e)=>{
+      setupAwayColor = e.target.value;
+      document.querySelectorAll('#awaySwatches .swatch').forEach(s=>s.classList.toggle('sel', s.dataset.color.toLowerCase()===setupAwayColor.toLowerCase()));
+      applyTeamColors(setupHomeColor, setupAwayColor);
+    };
+    document.querySelectorAll('.swatch').forEach(sw=>{
+      sw.onclick = ()=>{
+        const c = sw.dataset.color, team = sw.dataset.team;
+        if(team==='home'){
+          setupHomeColor = c;
+          document.getElementById('homeColorInput').value = c;
+          document.querySelectorAll('#homeSwatches .swatch').forEach(s=>s.classList.toggle('sel', s===sw));
+        } else {
+          setupAwayColor = c;
+          document.getElementById('awayColorInput').value = c;
+          document.querySelectorAll('#awaySwatches .swatch').forEach(s=>s.classList.toggle('sel', s===sw));
+        }
+        applyTeamColors(setupHomeColor, setupAwayColor);
+      };
+    });
+  }
+
+  // ---- History tab (available with or without an active match) ----
+  if(activeTab==='history'){
+    bindHistoryActions(document.getElementById('content'), render);
+  }
+
+  if(!state) return;
+
+  // ---- Match screens ----
   // clock controls
   const clockBtn = document.getElementById('clockToggleBtn');
   if(clockBtn) clockBtn.onclick = toggleClock;
@@ -960,7 +1012,7 @@ function bindMain(){
   document.querySelectorAll('[data-cardteam]').forEach(btn=>{
     btn.onclick = ()=>{ cardTeamSel = btn.dataset.cardteam; render(); };
   });
-  // share / reset
+  // team colour editors
   const editHomeColorInput = document.getElementById('editHomeColorInput');
   if(editHomeColorInput) editHomeColorInput.oninput = (e)=>{
     state.homeColor = e.target.value; save(); applyTeamColors();
@@ -969,23 +1021,31 @@ function bindMain(){
   if(editAwayColorInput) editAwayColorInput.oninput = (e)=>{
     state.awayColor = e.target.value; save(); applyTeamColors();
   };
+  // share / match actions
   const shareSummaryBtn = document.getElementById('shareSummaryBtn');
   if(shareSummaryBtn) shareSummaryBtn.onclick = ()=>shareText(buildSummaryText(), 'Match Summary');
   const shareLogBtn = document.getElementById('shareLogBtn');
   if(shareLogBtn) shareLogBtn.onclick = ()=>shareText(buildLogText(), 'Match Event Log');
   const newMatchBtn = document.getElementById('newMatchBtn');
   if(newMatchBtn) newMatchBtn.onclick = newMatch;
-  // history tab
-  if(activeTab==='history'){
-    bindHistoryActions(document.getElementById('content'), render);
-  }
+  const saveMatchBtn = document.getElementById('saveMatchBtn');
+  if(saveMatchBtn) saveMatchBtn.onclick = ()=>{ saveMatchToHistory(); render(); };
+  const discardMatchBtn = document.getElementById('discardMatchBtn');
+  if(discardMatchBtn) discardMatchBtn.onclick = discardMatch;
 }
 
 /* ============================ INIT ============================ */
 (function init(){
   state = load();
+  activeTab = state ? 'score' : 'setup';
   render();
 })();
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible'){
+    render();
+  }
+});
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', ()=>{
