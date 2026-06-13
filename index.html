@@ -261,6 +261,7 @@
 <script>
 /* ============================ STATE ============================ */
 const STORAGE_KEY = 'gaaMatchTrackerState_v1';
+const HISTORY_KEY = 'gaaMatchHistory_v1';
 let state = null;
 let activeTab = 'score';
 let cardTeamSel = 'home';
@@ -297,6 +298,24 @@ function load(){
     if(!raw) return null;
     return JSON.parse(raw);
   }catch(e){ return null; }
+}
+function loadHistory(){
+  try{
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if(!raw) return [];
+    return JSON.parse(raw);
+  }catch(e){ return []; }
+}
+function saveHistory(arr){ localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); }
+function archiveCurrentMatch(){
+  if(!state || state.events.length===0) return;
+  const history = loadHistory();
+  history.unshift({
+    id: Date.now(),
+    savedAt: new Date().toISOString(),
+    state: JSON.parse(JSON.stringify(state))
+  });
+  saveHistory(history);
 }
 
 /* ============================ HELPERS ============================ */
@@ -355,8 +374,8 @@ function applyTeamColors(hc, ac){
   root.setProperty('--away-shadow', shadowRgba(ac, .5));
 }
 
-function teamStats(team){
-  const evs = state.events.filter(e=>e.team===team);
+function teamStats(team, s=state){
+  const evs = s.events.filter(e=>e.team===team);
   const goals = evs.filter(e=>e.type==='goal').length;
   const points = evs.filter(e=>e.type==='point').length;
   const twoPt = evs.filter(e=>e.type==='twoPt').length;
@@ -371,8 +390,8 @@ function teamStats(team){
 function scoreNotation(s){
   return s.goals + '-' + String(s.totalPoints).padStart(2,'0');
 }
-function homeExtra(){
-  const c = t => state.events.filter(e=>e.type===t).length;
+function homeExtra(s=state){
+  const c = t => s.events.filter(e=>e.type===t).length;
   const ko=c('kickoutWon'), kl=c('kickoutLost');
   const oko=c('oppKickoutWon'), okl=c('oppKickoutLost');
   return {
@@ -383,8 +402,8 @@ function homeExtra(){
     freeWonAdvanced:c('freeWonAdvanced'), freeConcededAdvanced:c('freeConcededAdvanced')
   };
 }
-function cardStats(team){
-  const evs = state.events.filter(e=>e.team===team);
+function cardStats(team, s=state){
+  const evs = s.events.filter(e=>e.team===team);
   return {
     yellow: evs.filter(e=>e.type==='yellowCard').length,
     black: evs.filter(e=>e.type==='blackCard').length,
@@ -443,7 +462,8 @@ function stopTicker(){
   if(clockTickHandle){ clearInterval(clockTickHandle); clockTickHandle=null; }
 }
 function newMatch(){
-  if(!confirm('Start a new match? This will clear all current match data.')) return;
+  if(!confirm('Start a new match? The current match will be saved to Match History and the screen cleared.')) return;
+  archiveCurrentMatch();
   localStorage.removeItem(STORAGE_KEY);
   state = null; activeTab='score'; cardTeamSel='home';
   stopTicker();
@@ -459,36 +479,36 @@ function renameTeam(team){
 }
 
 /* ============================ TEXT EXPORT ============================ */
-function buildSummaryText(){
-  const h = teamStats('home'), a = teamStats('away');
-  const ex = homeExtra();
-  const hc = cardStats('home'), ac = cardStats('away');
+function buildSummaryText(s=state){
+  const h = teamStats('home', s), a = teamStats('away', s);
+  const ex = homeExtra(s);
+  const hc = cardStats('home', s), ac = cardStats('away', s);
   let t = '';
-  t += state.homeName + ' vs ' + state.awayName + '\n';
+  t += s.homeName + ' vs ' + s.awayName + '\n';
   t += 'FINAL SCORE\n';
-  t += state.homeName + ': ' + scoreNotation(h) + '  (' + h.total + ' pts)' + (h.twoPt? '  [' + h.twoPt + ' x 2-pt]':'') + '\n';
-  t += state.awayName + ': ' + scoreNotation(a) + '  (' + a.total + ' pts)' + (a.twoPt? '  [' + a.twoPt + ' x 2-pt]':'') + '\n';
+  t += s.homeName + ': ' + scoreNotation(h) + '  (' + h.total + ' pts)' + (h.twoPt? '  [' + h.twoPt + ' x 2-pt]':'') + '\n';
+  t += s.awayName + ': ' + scoreNotation(a) + '  (' + a.total + ' pts)' + (a.twoPt? '  [' + a.twoPt + ' x 2-pt]':'') + '\n';
   t += '\nSCORING BREAKDOWN\n';
-  t += state.homeName + ' - Goals: ' + h.goals + ', Points: ' + h.points + ', 2-Pointers: ' + h.twoPt + ', Wides: ' + h.wides + ', Accuracy: ' + h.accuracy + '%\n';
-  t += state.awayName + ' - Goals: ' + a.goals + ', Points: ' + a.points + ', 2-Pointers: ' + a.twoPt + ', Wides: ' + a.wides + ', Accuracy: ' + a.accuracy + '%\n';
-  t += '\n' + state.homeName.toUpperCase() + ' TEAM STATS\n';
+  t += s.homeName + ' - Goals: ' + h.goals + ', Points: ' + h.points + ', 2-Pointers: ' + h.twoPt + ', Wides: ' + h.wides + ', Accuracy: ' + h.accuracy + '%\n';
+  t += s.awayName + ' - Goals: ' + a.goals + ', Points: ' + a.points + ', 2-Pointers: ' + a.twoPt + ', Wides: ' + a.wides + ', Accuracy: ' + a.accuracy + '%\n';
+  t += '\n' + s.homeName.toUpperCase() + ' TEAM STATS\n';
   t += 'Kick-outs retained: ' + ex.kickoutWon + '/' + (ex.kickoutWon+ex.kickoutLost) + ' (' + ex.kickoutPct + '%)\n';
   t += 'Opposition kick-outs won: ' + ex.oppKickoutWon + '/' + (ex.oppKickoutWon+ex.oppKickoutLost) + ' (' + ex.oppKickoutPct + '%)\n';
   t += 'Fouls conceded: ' + ex.foulConceded + '  |  Fouls won: ' + ex.foulWon + '\n';
   t += 'Turnovers won: ' + ex.turnoverFor + '  |  Turnovers lost: ' + ex.turnoverAgainst + '\n';
   t += 'Free won - ball advanced: ' + ex.freeWonAdvanced + '  |  Free conceded - ball advanced against: ' + ex.freeConcededAdvanced + '\n';
   t += '\nCARDS\n';
-  t += state.homeName + ' - Yellow: ' + hc.yellow + ', Black: ' + hc.black + ', Red: ' + hc.red + '\n';
-  t += state.awayName + ' - Yellow: ' + ac.yellow + ', Black: ' + ac.black + ', Red: ' + ac.red + '\n';
-  const dur1 = state.half1Duration!=null ? fmtTime(state.half1Duration) : '-';
-  const dur2 = state.half2Duration!=null ? fmtTime(state.half2Duration) : '-';
+  t += s.homeName + ' - Yellow: ' + hc.yellow + ', Black: ' + hc.black + ', Red: ' + hc.red + '\n';
+  t += s.awayName + ' - Yellow: ' + ac.yellow + ', Black: ' + ac.black + ', Red: ' + ac.red + '\n';
+  const dur1 = s.half1Duration!=null ? fmtTime(s.half1Duration) : '-';
+  const dur2 = s.half2Duration!=null ? fmtTime(s.half2Duration) : '-';
   t += '\nHalf 1 duration: ' + dur1 + '   Half 2 duration: ' + dur2 + '\n';
   return t;
 }
-function buildLogText(){
+function buildLogText(s=state){
   let t = 'Half\tTime\tTeam\tEvent\tJersey\n';
-  state.events.forEach(e=>{
-    const team = e.team==='home' ? state.homeName : e.team==='away' ? state.awayName : '-';
+  s.events.forEach(e=>{
+    const team = e.team==='home' ? s.homeName : e.team==='away' ? s.awayName : '-';
     t += e.half + '\t' + fmtTime(e.time*1000) + '\t' + team + '\t' + EVENT_LABELS[e.type] + '\t' + (e.jersey||'') + '\n';
   });
   return t;
@@ -498,6 +518,71 @@ async function shareText(text, title){
     try{ await navigator.share({title, text}); return; }catch(e){ /* fall through */ }
   }
   showTextModal(title, text);
+}
+function showHistoryModal(){
+  const overlay = document.createElement('div');
+  overlay.className='overlay';
+  renderHistoryModal(overlay);
+  document.body.appendChild(overlay);
+}
+function fmtHistoryDate(iso){
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'}) + ' ' +
+         d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+}
+function renderHistoryModal(overlay){
+  const history = loadHistory();
+  let rows = '';
+  if(history.length===0){
+    rows = '<div class="empty-state" style="padding:20px 0;">No saved matches yet.<br>Completed matches are saved here when you start a new match.</div>';
+  } else {
+    history.forEach(rec=>{
+      const s = rec.state;
+      const h = teamStats('home', s), a = teamStats('away', s);
+      rows += `<div class="log-row" style="align-items:flex-start; flex-wrap:wrap;">
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:11px; color:var(--text-dim); margin-bottom:2px;">${fmtHistoryDate(rec.savedAt)}</div>
+          <div style="font-size:14px; font-weight:700;">${escapeHtml(s.homeName)} ${scoreNotation(h)} – ${scoreNotation(a)} ${escapeHtml(s.awayName)}</div>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:6px; width:100%;">
+          <button class="hist-share" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Share Summary</button>
+          <button class="hist-delete" data-id="${rec.id}" style="padding:8px 12px; border-radius:8px; border:1px solid var(--neg-border); background:transparent; color:var(--neg-border); font-weight:700; font-size:12px; cursor:pointer;">Delete</button>
+        </div>
+      </div>`;
+    });
+  }
+  overlay.innerHTML = `<div class="modal">
+    <h2>Match History</h2>
+    ${rows}
+    <div class="modal-actions">
+      <button class="cancel" id="closeHistoryBtn">Close</button>
+      ${history.length>0 ? '<button class="confirm" id="clearHistoryBtn" style="background:var(--neg-border); border-color:var(--neg-border); color:#2a0000;">Delete All</button>' : ''}
+    </div>
+  </div>`;
+  document.getElementById('closeHistoryBtn').onclick = ()=>overlay.remove();
+  const clearBtn = document.getElementById('clearHistoryBtn');
+  if(clearBtn) clearBtn.onclick = ()=>{
+    if(confirm('Delete all saved match history? This cannot be undone.')){
+      saveHistory([]);
+      renderHistoryModal(overlay);
+      render();
+    }
+  };
+  overlay.querySelectorAll('.hist-share').forEach(btn=>{
+    btn.onclick = ()=>{
+      const rec = loadHistory().find(r=>r.id===Number(btn.dataset.id));
+      if(rec) shareText(buildSummaryText(rec.state), 'Match Summary');
+    };
+  });
+  overlay.querySelectorAll('.hist-delete').forEach(btn=>{
+    btn.onclick = ()=>{
+      if(!confirm('Delete this saved match?')) return;
+      const updated = loadHistory().filter(r=>r.id!==Number(btn.dataset.id));
+      saveHistory(updated);
+      renderHistoryModal(overlay);
+      render();
+    };
+  });
 }
 function showTextModal(title, text){
   const overlay = document.createElement('div');
@@ -802,6 +887,7 @@ function renderStatsTab(){
   </div>
 
   <button class="danger-btn" id="newMatchBtn">Start New Match</button>
+  <button class="big-btn secondary" style="max-width:none; margin-top:10px;" id="viewHistoryBtn">📜 Match History (${loadHistory().length})</button>
   <div class="hint">Tip: add this page to your Home Screen (browser menu → "Add to Home Screen") for a full-screen, offline app. All data stays on this device.</div>
   `;
 }
@@ -872,6 +958,8 @@ function bindMain(){
   if(shareLogBtn) shareLogBtn.onclick = ()=>shareText(buildLogText(), 'Match Event Log');
   const newMatchBtn = document.getElementById('newMatchBtn');
   if(newMatchBtn) newMatchBtn.onclick = newMatch;
+  const viewHistoryBtn = document.getElementById('viewHistoryBtn');
+  if(viewHistoryBtn) viewHistoryBtn.onclick = showHistoryModal;
 }
 
 /* ============================ INIT ============================ */
