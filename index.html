@@ -404,10 +404,11 @@ function homeExtra(s=state){
 }
 function cardStats(team, s=state){
   const evs = s.events.filter(e=>e.team===team);
+  const jerseysFor = t => evs.filter(e=>e.type===t && e.jersey).map(e=>'#'+e.jersey);
   return {
-    yellow: evs.filter(e=>e.type==='yellowCard').length,
-    black: evs.filter(e=>e.type==='blackCard').length,
-    red: evs.filter(e=>e.type==='redCard').length
+    yellow: evs.filter(e=>e.type==='yellowCard').length, yellowJerseys: jerseysFor('yellowCard'),
+    black: evs.filter(e=>e.type==='blackCard').length, blackJerseys: jerseysFor('blackCard'),
+    red: evs.filter(e=>e.type==='redCard').length, redJerseys: jerseysFor('redCard')
   };
 }
 
@@ -498,8 +499,9 @@ function buildSummaryText(s=state){
   t += 'Turnovers won: ' + ex.turnoverFor + '  |  Turnovers lost: ' + ex.turnoverAgainst + '\n';
   t += 'Free won - ball advanced: ' + ex.freeWonAdvanced + '  |  Free conceded - ball advanced against: ' + ex.freeConcededAdvanced + '\n';
   t += '\nCARDS\n';
-  t += s.homeName + ' - Yellow: ' + hc.yellow + ', Black: ' + hc.black + ', Red: ' + hc.red + '\n';
-  t += s.awayName + ' - Yellow: ' + ac.yellow + ', Black: ' + ac.black + ', Red: ' + ac.red + '\n';
+  const cardField = (count, jerseys) => count + (jerseys.length ? ' (' + jerseys.join(', ') + ')' : '');
+  t += s.homeName + ' - Yellow: ' + cardField(hc.yellow, hc.yellowJerseys) + ', Black: ' + cardField(hc.black, hc.blackJerseys) + ', Red: ' + cardField(hc.red, hc.redJerseys) + '\n';
+  t += s.awayName + ' - Yellow: ' + cardField(ac.yellow, ac.yellowJerseys) + ', Black: ' + cardField(ac.black, ac.blackJerseys) + ', Red: ' + cardField(ac.red, ac.redJerseys) + '\n';
   const dur1 = s.half1Duration!=null ? fmtTime(s.half1Duration) : '-';
   const dur2 = s.half2Duration!=null ? fmtTime(s.half2Duration) : '-';
   t += '\nHalf 1 duration: ' + dur1 + '   Half 2 duration: ' + dur2 + '\n';
@@ -519,70 +521,72 @@ async function shareText(text, title){
   }
   showTextModal(title, text);
 }
+function fmtHistoryDate(iso){
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'}) + ' ' +
+         d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+}
+function renderHistoryRows(){
+  const history = loadHistory();
+  if(history.length===0){
+    return '<div class="empty-state" style="padding:20px 0;">No saved matches yet.<br>Completed matches are saved here when you start a new match.</div>';
+  }
+  return history.map(rec=>{
+    const s = rec.state;
+    const h = teamStats('home', s), a = teamStats('away', s);
+    return `<div class="log-row" style="align-items:flex-start; flex-wrap:wrap;">
+      <div style="flex:1; min-width:0;">
+        <div style="font-size:11px; color:var(--text-dim); margin-bottom:2px;">${fmtHistoryDate(rec.savedAt)}</div>
+        <div style="font-size:14px; font-weight:700;">${escapeHtml(s.homeName)} ${scoreNotation(h)} – ${scoreNotation(a)} ${escapeHtml(s.awayName)}</div>
+      </div>
+      <div style="display:flex; gap:6px; margin-top:6px; width:100%;">
+        <button class="hist-share" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Share Summary</button>
+        <button class="hist-delete" data-id="${rec.id}" style="padding:8px 12px; border-radius:8px; border:1px solid var(--neg-border); background:transparent; color:var(--neg-border); font-weight:700; font-size:12px; cursor:pointer;">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function bindHistoryActions(container, onChange){
+  container.querySelectorAll('.hist-share').forEach(btn=>{
+    btn.onclick = ()=>{
+      const rec = loadHistory().find(r=>r.id===Number(btn.dataset.id));
+      if(rec) shareText(buildSummaryText(rec.state), 'Match Summary');
+    };
+  });
+  container.querySelectorAll('.hist-delete').forEach(btn=>{
+    btn.onclick = ()=>{
+      if(!confirm('Delete this saved match?')) return;
+      const updated = loadHistory().filter(r=>r.id!==Number(btn.dataset.id));
+      saveHistory(updated);
+      onChange();
+    };
+  });
+  const clearBtn = container.querySelector('.clear-history-btn');
+  if(clearBtn) clearBtn.onclick = ()=>{
+    if(confirm('Delete all saved match history? This cannot be undone.')){
+      saveHistory([]);
+      onChange();
+    }
+  };
+}
 function showHistoryModal(){
   const overlay = document.createElement('div');
   overlay.className='overlay';
   renderHistoryModal(overlay);
   document.body.appendChild(overlay);
 }
-function fmtHistoryDate(iso){
-  const d = new Date(iso);
-  return d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'}) + ' ' +
-         d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
-}
 function renderHistoryModal(overlay){
   const history = loadHistory();
-  let rows = '';
-  if(history.length===0){
-    rows = '<div class="empty-state" style="padding:20px 0;">No saved matches yet.<br>Completed matches are saved here when you start a new match.</div>';
-  } else {
-    history.forEach(rec=>{
-      const s = rec.state;
-      const h = teamStats('home', s), a = teamStats('away', s);
-      rows += `<div class="log-row" style="align-items:flex-start; flex-wrap:wrap;">
-        <div style="flex:1; min-width:0;">
-          <div style="font-size:11px; color:var(--text-dim); margin-bottom:2px;">${fmtHistoryDate(rec.savedAt)}</div>
-          <div style="font-size:14px; font-weight:700;">${escapeHtml(s.homeName)} ${scoreNotation(h)} – ${scoreNotation(a)} ${escapeHtml(s.awayName)}</div>
-        </div>
-        <div style="display:flex; gap:6px; margin-top:6px; width:100%;">
-          <button class="hist-share" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Share Summary</button>
-          <button class="hist-delete" data-id="${rec.id}" style="padding:8px 12px; border-radius:8px; border:1px solid var(--neg-border); background:transparent; color:var(--neg-border); font-weight:700; font-size:12px; cursor:pointer;">Delete</button>
-        </div>
-      </div>`;
-    });
-  }
   overlay.innerHTML = `<div class="modal">
     <h2>Match History</h2>
-    ${rows}
+    ${renderHistoryRows()}
     <div class="modal-actions">
       <button class="cancel" id="closeHistoryBtn">Close</button>
-      ${history.length>0 ? '<button class="confirm" id="clearHistoryBtn" style="background:var(--neg-border); border-color:var(--neg-border); color:#2a0000;">Delete All</button>' : ''}
+      ${history.length>0 ? '<button class="confirm clear-history-btn" style="background:var(--neg-border); border-color:var(--neg-border); color:#2a0000;">Delete All</button>' : ''}
     </div>
   </div>`;
   document.getElementById('closeHistoryBtn').onclick = ()=>overlay.remove();
-  const clearBtn = document.getElementById('clearHistoryBtn');
-  if(clearBtn) clearBtn.onclick = ()=>{
-    if(confirm('Delete all saved match history? This cannot be undone.')){
-      saveHistory([]);
-      renderHistoryModal(overlay);
-      render();
-    }
-  };
-  overlay.querySelectorAll('.hist-share').forEach(btn=>{
-    btn.onclick = ()=>{
-      const rec = loadHistory().find(r=>r.id===Number(btn.dataset.id));
-      if(rec) shareText(buildSummaryText(rec.state), 'Match Summary');
-    };
-  });
-  overlay.querySelectorAll('.hist-delete').forEach(btn=>{
-    btn.onclick = ()=>{
-      if(!confirm('Delete this saved match?')) return;
-      const updated = loadHistory().filter(r=>r.id!==Number(btn.dataset.id));
-      saveHistory(updated);
-      renderHistoryModal(overlay);
-      render();
-    };
-  });
+  bindHistoryActions(overlay, ()=>{ renderHistoryModal(overlay); render(); });
 }
 function showTextModal(title, text){
   const overlay = document.createElement('div');
@@ -649,6 +653,7 @@ function renderSetup(){
       </div>
     </div>
     <button class="big-btn" id="startMatchBtn">Start Match</button>
+    ${loadHistory().length>0 ? `<button class="big-btn secondary" id="viewHistorySetupBtn">📜 Match History (${loadHistory().length})</button>` : ''}
   </div>`;
 }
 function bindSetup(){
@@ -660,6 +665,8 @@ function bindSetup(){
     state = defaultState(h, a, hc, ac);
     save(); render();
   };
+  const viewHistorySetupBtn = document.getElementById('viewHistorySetupBtn');
+  if(viewHistorySetupBtn) viewHistorySetupBtn.onclick = showHistoryModal;
   document.getElementById('homeColorInput').oninput = (e)=>{
     setupHomeColor = e.target.value;
     document.querySelectorAll('#homeSwatches .swatch').forEach(s=>s.classList.toggle('sel', s.dataset.color.toLowerCase()===setupHomeColor.toLowerCase()));
@@ -722,7 +729,8 @@ function renderMain(){
     ${activeTab==='cards' ? renderCardsTab() : ''}
     ${activeTab==='log' ? renderLogTab() : ''}
     ${activeTab==='stats' ? renderStatsTab() : ''}
-    ${activeTab!=='log' && activeTab!=='stats' ? `
+    ${activeTab==='history' ? renderHistoryTab() : ''}
+    ${(activeTab!=='log' && activeTab!=='stats' && activeTab!=='history') ? `
     <div class="undo-bar">
       <span>Last: ${undoLabel}</span>
       <button id="undoLastBtn" ${state.events.length===0?'disabled':''}>Undo Last</button>
@@ -734,6 +742,7 @@ function renderMain(){
     <button data-tab="cards" class="${activeTab==='cards'?'active':''}"><span class="ic">🟨</span>Cards</button>
     <button data-tab="log" class="${activeTab==='log'?'active':''}"><span class="ic">📋</span>Log</button>
     <button data-tab="stats" class="${activeTab==='stats'?'active':''}"><span class="ic">📊</span>Stats</button>
+    <button data-tab="history" class="${activeTab==='history'?'active':''}"><span class="ic">📜</span>History</button>
   </nav>`;
 }
 
@@ -865,9 +874,9 @@ function renderStatsTab(){
   <div class="section-title">Cards</div>
   <table class="stat-table">
     <tr><th></th><th class="home-col">${escapeHtml(state.homeName)}</th><th class="away-col">${escapeHtml(state.awayName)}</th></tr>
-    <tr><td>🟨 Yellow</td><td>${hc.yellow}</td><td>${ac.yellow}</td></tr>
-    <tr><td>⬛ Black</td><td>${hc.black}</td><td>${ac.black}</td></tr>
-    <tr><td>🟥 Red</td><td>${hc.red}</td><td>${ac.red}</td></tr>
+    <tr><td>🟨 Yellow</td><td>${hc.yellow}${hc.yellowJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+hc.yellowJerseys.join(', ')+')</span>':''}</td><td>${ac.yellow}${ac.yellowJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+ac.yellowJerseys.join(', ')+')</span>':''}</td></tr>
+    <tr><td>⬛ Black</td><td>${hc.black}${hc.blackJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+hc.blackJerseys.join(', ')+')</span>':''}</td><td>${ac.black}${ac.blackJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+ac.blackJerseys.join(', ')+')</span>':''}</td></tr>
+    <tr><td>🟥 Red</td><td>${hc.red}${hc.redJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+hc.redJerseys.join(', ')+')</span>':''}</td><td>${ac.red}${ac.redJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+ac.redJerseys.join(', ')+')</span>':''}</td></tr>
   </table>
 
   <div class="section-title">Team Colours</div>
@@ -887,8 +896,16 @@ function renderStatsTab(){
   </div>
 
   <button class="danger-btn" id="newMatchBtn">Start New Match</button>
-  <button class="big-btn secondary" style="max-width:none; margin-top:10px;" id="viewHistoryBtn">📜 Match History (${loadHistory().length})</button>
   <div class="hint">Tip: add this page to your Home Screen (browser menu → "Add to Home Screen") for a full-screen, offline app. All data stays on this device.</div>
+  `;
+}
+
+function renderHistoryTab(){
+  const history = loadHistory();
+  return `
+  <div class="section-title">Saved Matches</div>
+  ${renderHistoryRows()}
+  ${history.length>0 ? '<button class="danger-btn clear-history-btn">Delete All History</button>' : ''}
   `;
 }
 
@@ -958,8 +975,10 @@ function bindMain(){
   if(shareLogBtn) shareLogBtn.onclick = ()=>shareText(buildLogText(), 'Match Event Log');
   const newMatchBtn = document.getElementById('newMatchBtn');
   if(newMatchBtn) newMatchBtn.onclick = newMatch;
-  const viewHistoryBtn = document.getElementById('viewHistoryBtn');
-  if(viewHistoryBtn) viewHistoryBtn.onclick = showHistoryModal;
+  // history tab
+  if(activeTab==='history'){
+    bindHistoryActions(document.getElementById('content'), render);
+  }
 }
 
 /* ============================ INIT ============================ */
