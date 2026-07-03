@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gaa-match-tracker-v8';
+const CACHE_NAME = 'gaa-match-tracker-v12';
 const ASSETS = [
   './',
   './index.html',

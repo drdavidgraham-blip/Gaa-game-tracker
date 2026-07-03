@@ -329,10 +329,10 @@ function saveMatchToHistory(){
 }
 
 /* ============================ HELPERS ============================ */
-function getElapsedMs(){
-  if(!state) return 0;
-  if(state.clockRunning) return state.clockElapsed + (Date.now() - state.clockStart);
-  return state.clockElapsed;
+function getElapsedMs(s=state){
+  if(!s) return 0;
+  if(s.clockRunning) return s.clockElapsed + (Date.now() - s.clockStart);
+  return s.clockElapsed;
 }
 function fmtTime(ms){
   const totalSec = Math.max(0, Math.floor(ms/1000));
@@ -340,6 +340,133 @@ function fmtTime(ms){
   return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
 }
 function vibrate(){ if(navigator.vibrate) navigator.vibrate(15); }
+
+/* ---- possession time engine (deterministic replay) ----
+   Possession time is derived by replaying the event log, so it is always
+   consistent even after undos. Each event carries its match-clock time
+   (e.time, in seconds, within its half). A live possession runs from one
+   START/SWITCH event to the next possession-affecting event.
+   Ball dead (after wide/score/45) = no timing until next start event.
+   Kick-out events add a +3s bonus to the winning team.
+   The final open possession in each half runs to that half's end time. */
+const POSS_START = {
+  turnoverFor:'home', turnoverAgainst:'away',
+  kickoutWon:'home', kickoutLost:'away',
+  oppKickoutWon:'home', oppKickoutLost:'away',
+  foulWon:'home', foulConceded:'away',
+  freeWonAdvanced:'home', freeConcededAdvanced:'away'
+};
+const POSS_DEAD = ['wide','point','goal','twoPt','fortyFive'];
+const KICKOUT_TYPES = ['kickoutWon','kickoutLost','oppKickoutWon','oppKickoutLost'];
+
+// classify an event: returns {start:'home'|'away'} or {dead:true} or null
+function possTransition(e){
+  if(e.type==='overCarry') return {start: e.team==='home' ? 'home' : 'away'};
+  if(e.type==='fortyFive') return {dead:true};
+  if(POSS_START.hasOwnProperty(e.type)) return {start:POSS_START[e.type]};
+  if(POSS_DEAD.includes(e.type)) return {dead:true};
+  return null;
+}
+
+// Compute possession ms per team, optionally for one half only.
+// s defaults to the live state. Uses each half's duration (or live clock).
+function possessionTime(halfFilter, s=state){
+  const res = {home:0, away:0};
+  const halves = halfFilter ? [halfFilter] : [1,2];
+  halves.forEach(half=>{
+    // events in this half, in chronological order, that affect possession
+    const evs = s.events
+      .filter(e=>e.half===half && possTransition(e))
+      .sort((a,b)=>a.time-b.time);
+    // end-of-half time (seconds): banked half duration, or live clock if current half
+    let endSec;
+    if(half===1 && s.half1Duration!=null) endSec = s.half1Duration/1000;
+    else if(half===2 && s.half2Duration!=null) endSec = s.half2Duration/1000;
+    else if(s.half===half) endSec = getElapsedMs(s)/1000; // current, live half
+    else endSec = evs.length ? evs[evs.length-1].time : 0;
+
+    let holder=null, since=null;
+    evs.forEach(e=>{
+      const tr = possTransition(e);
+      if(holder && since!=null){
+        res[holder] += Math.max(0, (e.time - since)*1000);
+      }
+      if(tr.dead){ holder=null; since=null; }
+      else if(tr.start){ holder=tr.start; since=e.time; }
+      if(KICKOUT_TYPES.includes(e.type) && tr.start){
+        res[tr.start] += 3000; // +3s kickout bonus
+      }
+    });
+    // close the final open possession to end of half
+    if(holder && since!=null){
+      res[holder] += Math.max(0, (endSec - since)*1000);
+    }
+  });
+  const total = res.home + res.away;
+  return {
+    homeMs:res.home, awayMs:res.away, totalMs:total,
+    homePct: total ? Math.round(res.home/total*1000)/10 : 0,
+    awayPct: total ? Math.round(res.away/total*1000)/10 : 0
+  };
+}
+function fmtMMSS(ms){
+  const s = Math.max(0, Math.round(ms/1000));
+  return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+}
+
+/* Build the momentum curve for one half: cumulative possession lead
+   (home seconds minus away seconds) sampled at each possession change,
+   plus the list of score/wide/45 markers to plot along the timeline. */
+function possessionCurve(half, s=state){
+  const evs = s.events
+    .filter(e=>e.half===half)
+    .slice()
+    .sort((a,b)=>a.time-b.time);
+  let endSec;
+  if(half===1 && s.half1Duration!=null) endSec = s.half1Duration/1000;
+  else if(half===2 && s.half2Duration!=null) endSec = s.half2Duration/1000;
+  else if(s.half===half) endSec = getElapsedMs(s)/1000;
+  else { const pe=evs.filter(e=>possTransition(e)); endSec = pe.length ? pe[pe.length-1].time : 0; }
+  endSec = Math.max(endSec, 1);
+
+  // points: {t, lead} where lead = home-away cumulative seconds
+  const pts = [{t:0, lead:0}];
+  let holder=null, since=null, lead=0;
+  const markers = [];
+  const MARKER_TYPES = {goal:'⚽', point:'●', twoPt:'✚', wide:'✗', fortyFive:'45'};
+
+  evs.forEach(e=>{
+    const tr = possTransition(e);
+    // advance the running lead up to this event's time using current holder
+    if(holder && since!=null){
+      const dur = Math.max(0, e.time - since);
+      lead += holder==='home' ? dur : -dur;
+      pts.push({t:e.time, lead});
+    }
+    // collect visual markers for scores/wides/45s
+    if(MARKER_TYPES[e.type]){
+      markers.push({t:e.time, type:e.type, team:e.team, icon:MARKER_TYPES[e.type]});
+    }
+    if(tr){
+      if(tr.dead){ holder=null; since=null; }
+      else if(tr.start){ holder=tr.start; since=e.time; }
+      if(KICKOUT_TYPES.includes(e.type) && tr.start){
+        lead += tr.start==='home' ? 3 : -3;  // +3s kickout bonus into the lead
+        pts.push({t:e.time, lead});
+      }
+    }
+  });
+  // close to end of half
+  if(holder && since!=null){
+    const dur = Math.max(0, endSec - since);
+    lead += holder==='home' ? dur : -dur;
+  }
+  pts.push({t:endSec, lead});
+  // peak absolute lead for scaling
+  let peak = 1;
+  pts.forEach(p=>{ if(Math.abs(p.lead)>peak) peak=Math.abs(p.lead); });
+  return {pts, markers, endSec, peak};
+}
 function venueLabel(s=state){
   return s.venue==='away' ? 'Away' : 'Home';
 }
@@ -428,6 +555,7 @@ function cardStats(team, s=state){
     red: evs.filter(e=>e.type==='redCard').length, redJerseys: jerseysFor('redCard')
   };
 }
+
 
 /* ============================ ACTIONS ============================ */
 function recordEvent(type, team=null, jersey=null){
@@ -541,6 +669,10 @@ function buildSummaryText(s=state){
   t += s.homeName + ' - Goals: ' + h.goals + ', Points: ' + h.points + ', 2-Pointers: ' + h.twoPt + ', Wides: ' + h.wides + ', Accuracy: ' + h.accuracy + '%\n';
   t += s.awayName + ' - Goals: ' + a.goals + ', Points: ' + a.points + ', 2-Pointers: ' + a.twoPt + ', Wides: ' + a.wides + ', Accuracy: ' + a.accuracy + '%\n';
   t += '\n' + s.homeName.toUpperCase() + ' TEAM STATS\n';
+  const pAll = possessionTime(null, s), p1 = possessionTime(1, s), p2 = possessionTime(2, s);
+  t += 'Possession time (ball-in-play):\n';
+  t += '  Overall: ' + s.homeName + ' ' + pAll.homePct + '% (' + fmtMMSS(pAll.homeMs) + ') / ' + s.awayName + ' ' + pAll.awayPct + '% (' + fmtMMSS(pAll.awayMs) + ')\n';
+  t += '  1st Half: ' + p1.homePct + '% / ' + p1.awayPct + '%   2nd Half: ' + p2.homePct + '% / ' + p2.awayPct + '%\n';
   t += 'Kick-outs retained: ' + ex.kickoutWon + '/' + (ex.kickoutWon+ex.kickoutLost) + ' (' + ex.kickoutPct + '%)\n';
   t += 'Opposition kick-outs won: ' + ex.oppKickoutWon + '/' + (ex.oppKickoutWon+ex.oppKickoutLost) + ' (' + ex.oppKickoutPct + '%)\n';
   t += 'Fouls won: ' + ex.foulWon + '  |  Fouls conceded: ' + ex.foulConceded + '\n';
@@ -591,7 +723,8 @@ function renderHistoryRows(){
         <div style="font-size:14px; font-weight:700;">${escapeHtml(s.homeName)} ${scoreNotation(h)} – ${scoreNotation(a)} ${escapeHtml(s.awayName)}</div>
       </div>
       <div style="display:flex; gap:6px; margin-top:6px; width:100%;">
-        <button class="hist-share" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Share Summary</button>
+        <button class="hist-share" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Summary</button>
+        <button class="hist-log" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Log</button>
         <button class="hist-delete" data-id="${rec.id}" style="padding:8px 12px; border-radius:8px; border:1px solid var(--neg-border); background:transparent; color:var(--neg-border); font-weight:700; font-size:12px; cursor:pointer;">Delete</button>
       </div>
     </div>`;
@@ -602,6 +735,12 @@ function bindHistoryActions(container, onChange){
     btn.onclick = ()=>{
       const rec = loadHistory().find(r=>r.id===Number(btn.dataset.id));
       if(rec) shareText(buildSummaryText(rec.state), 'Match Summary');
+    };
+  });
+  container.querySelectorAll('.hist-log').forEach(btn=>{
+    btn.onclick = ()=>{
+      const rec = loadHistory().find(r=>r.id===Number(btn.dataset.id));
+      if(rec) shareText(buildLogText(rec.state), 'Match Event Log');
     };
   });
   container.querySelectorAll('.hist-delete').forEach(btn=>{
@@ -878,6 +1017,111 @@ function renderLogTab(){
   return html;
 }
 
+/* Render one half's momentum timeline as an inline SVG.
+   Line swings up (our colour) when we build a possession lead,
+   down (their colour) when they do. Event markers sit at their time. */
+function renderMomentumSVG(half){
+  const curve = possessionCurve(half);
+  if(curve.pts.length<2 || curve.endSec<1){
+    return `<div class="hint" style="text-align:left; margin:4px 0 2px;">No possession data for this half yet.</div>`;
+  }
+  const W=320, H=110, midY=H/2, padX=6, padTop=8, padBot=8;
+  const usableW = W - padX*2;
+  const usableH = (H - padTop - padBot)/2;
+  const xOf = t => padX + (t/curve.endSec)*usableW;
+  const yOf = lead => midY - (lead/curve.peak)*usableH;
+
+  // build the momentum path
+  let d = '';
+  curve.pts.forEach((p,i)=>{ d += (i===0?'M':'L') + xOf(p.t).toFixed(1) + ',' + yOf(p.lead).toFixed(1) + ' '; });
+
+  // area fills: split above/below the mid line via two clipped copies
+  const homeCol = state.homeColor, awayCol = state.awayColor;
+
+  // gridlines every 5 minutes
+  let grid='';
+  for(let m=5; m*60<curve.endSec; m+=5){
+    const x=xOf(m*60).toFixed(1);
+    grid += `<line x1="${x}" y1="${padTop}" x2="${x}" y2="${H-padBot}" stroke="#2a3a32" stroke-width="1" stroke-dasharray="2,3"/>`;
+    grid += `<text x="${x}" y="${H-1}" fill="#8da39a" font-size="7" text-anchor="middle">${m}'</text>`;
+  }
+
+  // event markers
+  const markerColor = (team)=> team==='home' ? homeCol : awayCol;
+  let marks='';
+  curve.markers.forEach((mk,i)=>{
+    const x=xOf(mk.t);
+    // find the lead at this time to place marker on the line-ish; use top/bottom band by team
+    const y = mk.team==='home' ? padTop+7 : H-padBot-7;
+    const label = EVENT_LABELS[mk.type] + ' · ' + (mk.team==='home'?state.homeName:state.awayName) + ' · ' + fmtMMSS(mk.t*1000);
+    const big = (mk.type==='goal');
+    marks += `<g class="pm-marker" data-info="${escapeHtml(label)}" style="cursor:pointer;">
+      <line x1="${x.toFixed(1)}" y1="${padTop}" x2="${x.toFixed(1)}" y2="${H-padBot}" stroke="${markerColor(mk.team)}" stroke-width="0.75" opacity="0.35"/>
+      <circle cx="${x.toFixed(1)}" cy="${y}" r="${big?7:6}" fill="${markerColor(mk.team)}" opacity="0.95"/>
+      <text x="${x.toFixed(1)}" y="${y+2.5}" fill="#04140a" font-size="${mk.type==='fortyFive'?5:7}" font-weight="700" text-anchor="middle">${mk.icon}</text>
+    </g>`;
+  });
+
+  return `
+  <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block; background:var(--surface); border:1px solid var(--border); border-radius:8px;" preserveAspectRatio="none">
+    ${grid}
+    <line x1="${padX}" y1="${midY}" x2="${W-padX}" y2="${midY}" stroke="#3a4f47" stroke-width="1"/>
+    <path d="${d}" fill="none" stroke="url(#pmGrad${half})" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <defs>
+      <linearGradient id="pmGrad${half}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${homeCol}"/>
+        <stop offset="49%" stop-color="${homeCol}"/>
+        <stop offset="51%" stop-color="${awayCol}"/>
+        <stop offset="100%" stop-color="${awayCol}"/>
+      </linearGradient>
+    </defs>
+    ${marks}
+    <text x="${padX+2}" y="${padTop+3}" fill="${homeCol}" font-size="7" font-weight="700">${escapeHtml(state.homeName)} ▲</text>
+    <text x="${padX+2}" y="${H-padBot+1}" fill="${awayCol}" font-size="7" font-weight="700">${escapeHtml(state.awayName)} ▼</text>
+  </svg>`;
+}
+
+function renderMomentumTimeline(){
+  const hasH1 = state.events.some(e=>e.half===1);
+  const hasH2 = state.events.some(e=>e.half===2);
+  if(!hasH1 && !hasH2){
+    return `<div class="hint" style="text-align:left;">Momentum timeline will appear here once possession events are recorded.</div>`;
+  }
+  let html='';
+  if(hasH1){
+    html += `<div style="font-size:11px; color:var(--text-dim); margin:2px 0 4px; font-weight:700;">1st Half</div>${renderMomentumSVG(1)}`;
+  }
+  if(hasH2){
+    html += `<div style="font-size:11px; color:var(--text-dim); margin:12px 0 4px; font-weight:700;">2nd Half</div>${renderMomentumSVG(2)}`;
+  }
+  html += `<div class="hint" style="text-align:left; margin-top:6px;">Line rises toward ${escapeHtml(state.homeName)} when they build a possession lead, and toward ${escapeHtml(state.awayName)} the other way. ● point · ✚ 2-pt · ⚽ goal · ✗ wide · 45. Tap a marker for detail.</div>
+  <div id="pmDetail" style="margin-top:8px; font-size:12px; color:var(--text); min-height:16px;"></div>`;
+  return html;
+}
+
+function renderPossessionTable(){
+  const overall = possessionTime(null);
+  const h1 = possessionTime(1);
+  const h2 = possessionTime(2);
+  const bar = (p)=>`<div style="height:8px; border-radius:4px; overflow:hidden; display:flex; background:var(--away); margin-top:4px;">
+      <div style="width:${p.homePct}%; background:var(--home);"></div>
+    </div>`;
+  const row = (label, p)=>`
+    <tr><td>${label}</td>
+      <td class="home-col">${p.homePct}% <span style="color:var(--text-dim); font-weight:400; font-size:11px;">(${fmtMMSS(p.homeMs)})</span></td>
+      <td class="away-col">${p.awayPct}% <span style="color:var(--text-dim); font-weight:400; font-size:11px;">(${fmtMMSS(p.awayMs)})</span></td>
+    </tr>`;
+  return `
+  <table class="stat-table">
+    <tr><th></th><th class="home-col">${escapeHtml(state.homeName)}</th><th class="away-col">${escapeHtml(state.awayName)}</th></tr>
+    ${row('Overall', overall)}
+    ${row('1st Half', h1)}
+    ${row('2nd Half', h2)}
+  </table>
+  ${overall.totalMs ? bar(overall) : ''}
+  <div class="hint" style="margin-top:6px; text-align:left;">Time the ball was in play with each side, measured between the turnover/kick-out/free events you logged. Time stops after a wide, score or 45 until the next restart. Kick-outs add 3s. Accuracy depends on tapping every change of hands.</div>`;
+}
+
 function renderStatsTab(){
   const h = teamStats('home'), a = teamStats('away');
   const ex = homeExtra();
@@ -894,6 +1138,12 @@ function renderStatsTab(){
     <tr><td>Wides</td><td>${h.wides}</td><td>${a.wides}</td></tr>
     <tr><td>Accuracy</td><td>${h.accuracy}%</td><td>${a.accuracy}%</td></tr>
   </table>
+
+  <div class="section-title">Possession Time <span style="text-transform:none; letter-spacing:0; font-weight:400;">(ball-in-play, by turnovers logged)</span></div>
+  ${renderPossessionTable()}
+
+  <div class="section-title">Momentum Timeline</div>
+  ${renderMomentumTimeline()}
 
   <div class="section-title">${escapeHtml(state.homeName)} – Possession</div>
   <table class="stat-table">
@@ -1082,6 +1332,13 @@ function bindAll(){
   if(saveMatchBtn) saveMatchBtn.onclick = ()=>{ saveMatchToHistory(); render(); };
   const discardMatchBtn = document.getElementById('discardMatchBtn');
   if(discardMatchBtn) discardMatchBtn.onclick = discardMatch;
+  // momentum timeline marker taps
+  const pmDetail = document.getElementById('pmDetail');
+  if(pmDetail){
+    document.querySelectorAll('.pm-marker').forEach(g=>{
+      g.onclick = ()=>{ pmDetail.textContent = '📍 ' + g.getAttribute('data-info'); };
+    });
+  }
 }
 
 /* ============================ INIT ============================ */
