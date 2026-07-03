@@ -65,6 +65,12 @@
     width:24px; height:24px; border-radius:50%; border:2px solid var(--border); cursor:pointer; padding:0;
   }
   .swatch.sel{border-color:var(--text);}
+  .venue-toggle{display:flex; gap:8px;}
+  .venue-toggle button{
+    flex:1; padding:13px; border-radius:var(--radius); border:1px solid var(--border);
+    background:var(--surface-2); color:var(--text); font-weight:700; cursor:pointer; font-size:14px;
+  }
+  .venue-toggle button.sel{background:var(--home); color:var(--home-text); border-color:var(--home);}
   .big-btn{
     width:100%; max-width:320px; padding:16px; border:none; border-radius:var(--radius);
     font-size:17px; font-weight:700; letter-spacing:.03em; cursor:pointer;
@@ -87,6 +93,7 @@
   }
   .sb-team.home .name{color:var(--home-accent);}
   .sb-team.away .name{color:var(--away-accent);}
+  .sb-venue{font-size:9px; color:var(--text-dim); letter-spacing:.08em; text-transform:uppercase;}
   .sb-score{
     font-family:"SF Mono","Roboto Mono",ui-monospace,Menlo,Consolas,monospace;
     font-size:34px; font-weight:700; letter-spacing:.04em; line-height:1;
@@ -264,23 +271,27 @@ let setupHomeColor = '#22c55e';
 let setupAwayColor = '#f97316';
 let setupHomeName = '';
 let setupAwayName = '';
+let setupVenue = 'home';
 
 const EVENT_LABELS = {
   goal:'Goal', point:'Point', twoPt:'2-Pointer', wide:'Wide',
   kickoutWon:'Kick-out Won', kickoutLost:'Kick-out Lost',
   oppKickoutWon:'Opp. Kick-out Won', oppKickoutLost:'Opp. Kick-out Lost',
   foulConceded:'Foul Conceded', foulWon:'Foul Won',
+  overCarry:'Over Carry',
   turnoverFor:'Turnover Won', turnoverAgainst:'Turnover Lost',
   freeWonAdvanced:'Free Won \u2013 Ball Advanced', freeConcededAdvanced:'Free Conceded \u2013 Ball Advanced (Against)',
+  fortyFive:'45 Kick',
   yellowCard:'Yellow Card', blackCard:'Black Card', redCard:'Red Card'
 };
 
 const PRESET_COLORS = ['#ffffff','#22c55e','#3b82f6','#ef4444','#facc15','#1e3a8a','#7c2d12','#0ea5e9','#a855f7','#f97316','#111827'];
 
-function defaultState(homeName, awayName, homeColor, awayColor){
+function defaultState(homeName, awayName, homeColor, awayColor, venue){
   return {
-    homeName: homeName || 'Home', awayName: awayName || 'Opposition',
+    homeName: homeName || 'Our Team', awayName: awayName || 'Opposition',
     homeColor: homeColor || '#22c55e', awayColor: awayColor || '#f97316',
+    venue: venue || 'home',
     half:1, clockRunning:false, clockStart:null, clockElapsed:0,
     half1Duration:null, half2Duration:null, matchEnded:false,
     events:[], nextId:1, historyId:null
@@ -329,6 +340,9 @@ function fmtTime(ms){
   return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
 }
 function vibrate(){ if(navigator.vibrate) navigator.vibrate(15); }
+function venueLabel(s=state){
+  return s.venue==='away' ? 'Away' : 'Home';
+}
 
 /* ---- team colour helpers ---- */
 function hexToRgb(hex){
@@ -392,12 +406,15 @@ function scoreNotation(s){
 }
 function homeExtra(s=state){
   const c = t => s.events.filter(e=>e.type===t).length;
+  const ct = (t,team) => s.events.filter(e=>e.type===t && e.team===team).length;
   const ko=c('kickoutWon'), kl=c('kickoutLost');
   const oko=c('oppKickoutWon'), okl=c('oppKickoutLost');
   return {
     kickoutWon:ko, kickoutLost:kl, kickoutPct:(ko+kl)?Math.round(ko/(ko+kl)*1000)/10:0,
     oppKickoutWon:oko, oppKickoutLost:okl, oppKickoutPct:(oko+okl)?Math.round(oko/(oko+okl)*1000)/10:0,
     foulConceded:c('foulConceded'), foulWon:c('foulWon'),
+    overCarryFor:ct('overCarry','home'), overCarryAgainst:ct('overCarry','away'),
+    fortyFiveFor:ct('fortyFive','home'), fortyFiveAgainst:ct('fortyFive','away'),
     turnoverFor:c('turnoverFor'), turnoverAgainst:c('turnoverAgainst'),
     freeWonAdvanced:c('freeWonAdvanced'), freeConcededAdvanced:c('freeConcededAdvanced')
   };
@@ -516,6 +533,7 @@ function buildSummaryText(s=state){
   const hc = cardStats('home', s), ac = cardStats('away', s);
   let t = '';
   t += s.homeName + ' vs ' + s.awayName + '\n';
+  t += '(' + venueLabel(s) + ' game for ' + s.homeName + ')\n';
   t += 'FINAL SCORE\n';
   t += s.homeName + ': ' + scoreNotation(h) + '  (' + h.total + ' pts)' + (h.twoPt? '  [' + h.twoPt + ' x 2-pt]':'') + '\n';
   t += s.awayName + ': ' + scoreNotation(a) + '  (' + a.total + ' pts)' + (a.twoPt? '  [' + a.twoPt + ' x 2-pt]':'') + '\n';
@@ -525,7 +543,9 @@ function buildSummaryText(s=state){
   t += '\n' + s.homeName.toUpperCase() + ' TEAM STATS\n';
   t += 'Kick-outs retained: ' + ex.kickoutWon + '/' + (ex.kickoutWon+ex.kickoutLost) + ' (' + ex.kickoutPct + '%)\n';
   t += 'Opposition kick-outs won: ' + ex.oppKickoutWon + '/' + (ex.oppKickoutWon+ex.oppKickoutLost) + ' (' + ex.oppKickoutPct + '%)\n';
-  t += 'Fouls conceded: ' + ex.foulConceded + '  |  Fouls won: ' + ex.foulWon + '\n';
+  t += 'Fouls won: ' + ex.foulWon + '  |  Fouls conceded: ' + ex.foulConceded + '\n';
+  t += 'Over carry won: ' + ex.overCarryFor + '  |  Over carry against: ' + ex.overCarryAgainst + '\n';
+  t += '45s for: ' + ex.fortyFiveFor + '  |  45s against: ' + ex.fortyFiveAgainst + '\n';
   t += 'Turnovers won: ' + ex.turnoverFor + '  |  Turnovers lost: ' + ex.turnoverAgainst + '\n';
   t += 'Free won - ball advanced: ' + ex.freeWonAdvanced + '  |  Free conceded - ball advanced against: ' + ex.freeConcededAdvanced + '\n';
   t += '\nCARDS\n';
@@ -564,9 +584,10 @@ function renderHistoryRows(){
   return history.map(rec=>{
     const s = rec.state;
     const h = teamStats('home', s), a = teamStats('away', s);
+    const venueTag = s.venue ? ' · ' + venueLabel(s) : '';
     return `<div class="log-row" style="align-items:flex-start; flex-wrap:wrap;">
       <div style="flex:1; min-width:0;">
-        <div style="font-size:11px; color:var(--text-dim); margin-bottom:2px;">${fmtHistoryDate(rec.savedAt)}</div>
+        <div style="font-size:11px; color:var(--text-dim); margin-bottom:2px;">${fmtHistoryDate(rec.savedAt)}${venueTag}</div>
         <div style="font-size:14px; font-weight:700;">${escapeHtml(s.homeName)} ${scoreNotation(h)} – ${scoreNotation(a)} ${escapeHtml(s.awayName)}</div>
       </div>
       <div style="display:flex; gap:6px; margin-top:6px; width:100%;">
@@ -655,6 +676,7 @@ function renderScoreboard(){
     <div class="sb-grid">
       <div class="sb-team home">
         <div class="name" data-rename="home">${escapeHtml(state.homeName)}</div>
+        <div class="sb-venue">${venueLabel()}</div>
         <div class="sb-score">${scoreNotation(h)}</div>
         <div class="sb-sub">${h.total} pts${h.twoPt?' · '+h.twoPt+'x2pt':''}</div>
       </div>
@@ -668,6 +690,7 @@ function renderScoreboard(){
       </div>
       <div class="sb-team away">
         <div class="name" data-rename="away">${escapeHtml(state.awayName)}</div>
+        <div class="sb-venue">${state.venue==='away' ? 'Home' : 'Away'}</div>
         <div class="sb-score">${scoreNotation(a)}</div>
         <div class="sb-sub">${a.total} pts${a.twoPt?' · '+a.twoPt+'x2pt':''}</div>
       </div>
@@ -707,7 +730,7 @@ function renderTabbar(){
   }
   return `<nav id="tabbar">
     <button data-tab="score" class="${activeTab==='score'?'active':''}"><span class="ic">⚽</span>Score</button>
-    <button data-tab="home" class="${activeTab==='home'?'active':''}"><span class="ic">🛡️</span>Home</button>
+    <button data-tab="home" class="${activeTab==='home'?'active':''}"><span class="ic">🛡️</span>Gameplay</button>
     <button data-tab="cards" class="${activeTab==='cards'?'active':''}"><span class="ic">🟨</span>Cards</button>
     <button data-tab="log" class="${activeTab==='log'?'active':''}"><span class="ic">📋</span>Log</button>
     <button data-tab="stats" class="${activeTab==='stats'?'active':''}"><span class="ic">📊</span>Stats</button>
@@ -723,7 +746,7 @@ function renderSetupContent(){
   <div style="max-width:340px; margin:0 auto;">
     <p style="color:var(--text-dim); font-size:13px; text-align:center; margin:4px 0 18px;">Enter the team names and pick a colour for each side. All data is saved on this device only — no internet needed.</p>
     <div class="field" style="margin:0 auto 16px;">
-      <label><span class="home-badge"></span>Home Team</label>
+      <label><span class="home-badge"></span>Our Team</label>
       <input id="homeNameInput" type="text" placeholder="e.g. St. Mary's" maxlength="24" value="${escapeHtml(setupHomeName)}">
       <div class="color-row">
         <input type="color" id="homeColorInput" value="${setupHomeColor}">
@@ -736,6 +759,13 @@ function renderSetupContent(){
       <div class="color-row">
         <input type="color" id="awayColorInput" value="${setupAwayColor}">
         <div class="swatches" id="awaySwatches">${swatchHtml('away', setupAwayColor)}</div>
+      </div>
+    </div>
+    <div class="field" style="margin:0 auto 18px;">
+      <label>Venue — are we playing home or away?</label>
+      <div class="venue-toggle">
+        <button data-venue="home" class="${setupVenue==='home'?'sel':''}">🏠 Home</button>
+        <button data-venue="away" class="${setupVenue==='away'?'sel':''}">✈️ Away</button>
       </div>
     </div>
     <button class="big-btn" id="startMatchBtn" style="margin:6px auto 0; display:block;">Start Match</button>
@@ -752,6 +782,7 @@ function renderScoreTab(){
         <button class="tap-btn home" data-action="point" data-team="home">POINT<small>+1</small></button>
         <button class="tap-btn home" data-action="twoPt" data-team="home">2-PT<small>+2</small></button>
         <button class="tap-btn wide-home" data-action="wide" data-team="home">WIDE</button>
+        <button class="tap-btn wide-home" data-action="fortyFive" data-team="home">45<small>For</small></button>
       </div>
     </div>
     <div>
@@ -761,6 +792,7 @@ function renderScoreTab(){
         <button class="tap-btn away" data-action="point" data-team="away">POINT<small>+1</small></button>
         <button class="tap-btn away" data-action="twoPt" data-team="away">2-PT<small>+2</small></button>
         <button class="tap-btn wide-away" data-action="wide" data-team="away">WIDE</button>
+        <button class="tap-btn wide-away" data-action="fortyFive" data-team="away">45<small>Against</small></button>
       </div>
     </div>
   </div>`;
@@ -777,8 +809,13 @@ function renderHomeTab(){
   </div>
   <div class="section-title">Fouls</div>
   <div class="grid-2">
-    <button class="tap-btn neutral neg" data-action="foulConceded" data-team="home">Foul Conceded</button>
     <button class="tap-btn neutral pos" data-action="foulWon" data-team="home">Foul Won</button>
+    <button class="tap-btn neutral neg" data-action="foulConceded" data-team="home">Foul Conceded</button>
+  </div>
+  <div class="section-title">Over Carry</div>
+  <div class="grid-2">
+    <button class="tap-btn neutral pos" data-action="overCarry" data-team="home">Over Carry Won</button>
+    <button class="tap-btn neutral neg" data-action="overCarry" data-team="away">Over Carry Against</button>
   </div>
   <div class="section-title">Turnovers</div>
   <div class="grid-2">
@@ -787,8 +824,8 @@ function renderHomeTab(){
   </div>
   <div class="section-title">Discipline / Territory</div>
   <div class="grid-2">
-    <button class="tap-btn neutral pos" data-action="freeWonAdvanced" data-team="home">Free Won<small>Ball Advanced</small></button>
-    <button class="tap-btn neutral neg" data-action="freeConcededAdvanced" data-team="home">Free Conceded<small>Ball Advanced (Against)</small></button>
+    <button class="tap-btn neutral pos" data-action="freeWonAdvanced" data-team="home">Ball Advanced For<small>Free Won</small></button>
+    <button class="tap-btn neutral neg" data-action="freeConcededAdvanced" data-team="home">Ball Advanced Against<small>Free Conceded</small></button>
   </div>`;
 }
 
@@ -820,7 +857,7 @@ function describeEvent(e, short=false){
 
 function renderLogTab(){
   if(state.events.length===0){
-    return `<div class="empty-state">No events recorded yet.<br>Tap any action button on the Score, Home or Cards tabs to begin the log.</div>`;
+    return `<div class="empty-state">No events recorded yet.<br>Tap any action button on the Score, Gameplay or Cards tabs to begin the log.</div>`;
   }
   const reversed = state.events.slice().reverse();
   let html = '';
@@ -846,7 +883,7 @@ function renderStatsTab(){
   const ex = homeExtra();
   const hc = cardStats('home'), ac = cardStats('away');
   return `
-  <div class="section-title">Score Breakdown</div>
+  <div class="section-title">Score Breakdown · ${venueLabel()} game</div>
   <table class="stat-table">
     <tr><th></th><th class="home-col">${escapeHtml(state.homeName)}</th><th class="away-col">${escapeHtml(state.awayName)}</th></tr>
     <tr><td>Score</td><td class="home-col">${scoreNotation(h)}</td><td class="away-col">${scoreNotation(a)}</td></tr>
@@ -862,7 +899,9 @@ function renderStatsTab(){
   <table class="stat-table">
     <tr><td>Kick-outs Retained</td><td>${ex.kickoutWon} / ${ex.kickoutWon+ex.kickoutLost} (${ex.kickoutPct}%)</td></tr>
     <tr><td>Opp. Kick-outs Won</td><td>${ex.oppKickoutWon} / ${ex.oppKickoutWon+ex.oppKickoutLost} (${ex.oppKickoutPct}%)</td></tr>
-    <tr><td>Fouls Conceded / Won</td><td>${ex.foulConceded} / ${ex.foulWon}</td></tr>
+    <tr><td>Fouls Won / Conceded</td><td>${ex.foulWon} / ${ex.foulConceded}</td></tr>
+    <tr><td>Over Carry (Won / Against)</td><td>${ex.overCarryFor} / ${ex.overCarryAgainst}</td></tr>
+    <tr><td>45s (For / Against)</td><td>${ex.fortyFiveFor} / ${ex.fortyFiveAgainst}</td></tr>
     <tr><td>Turnovers Won / Lost</td><td>${ex.turnoverFor} / ${ex.turnoverAgainst}</td></tr>
     <tr><td>Frees \u2013 Ball Advanced (For / Against)</td><td>${ex.freeWonAdvanced} / ${ex.freeConcededAdvanced}</td></tr>
   </table>
@@ -873,6 +912,11 @@ function renderStatsTab(){
     <tr><td>🟨 Yellow</td><td>${hc.yellow}${hc.yellowJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+hc.yellowJerseys.join(', ')+')</span>':''}</td><td>${ac.yellow}${ac.yellowJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+ac.yellowJerseys.join(', ')+')</span>':''}</td></tr>
     <tr><td>⬛ Black</td><td>${hc.black}${hc.blackJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+hc.blackJerseys.join(', ')+')</span>':''}</td><td>${ac.black}${ac.blackJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+ac.blackJerseys.join(', ')+')</span>':''}</td></tr>
     <tr><td>🟥 Red</td><td>${hc.red}${hc.redJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+hc.redJerseys.join(', ')+')</span>':''}</td><td>${ac.red}${ac.redJerseys.length?' <span style="color:var(--text-dim); font-size:11px;">('+ac.redJerseys.join(', ')+')</span>':''}</td></tr>
+  </table>
+
+  <div class="section-title">Match Details</div>
+  <table class="stat-table">
+    <tr><td>Venue</td><td>${venueLabel()} game for ${escapeHtml(state.homeName)}</td></tr>
   </table>
 
   <div class="section-title">Team Colours</div>
@@ -926,11 +970,11 @@ function bindAll(){
   const startMatchBtn = document.getElementById('startMatchBtn');
   if(startMatchBtn){
     startMatchBtn.onclick = ()=>{
-      const h = document.getElementById('homeNameInput').value.trim() || 'Home';
+      const h = document.getElementById('homeNameInput').value.trim() || 'Our Team';
       const a = document.getElementById('awayNameInput').value.trim() || 'Opposition';
       const hc = document.getElementById('homeColorInput').value || setupHomeColor;
       const ac = document.getElementById('awayColorInput').value || setupAwayColor;
-      state = defaultState(h, a, hc, ac);
+      state = defaultState(h, a, hc, ac, setupVenue);
       activeTab = 'score';
       save(); render();
     };
@@ -959,6 +1003,12 @@ function bindAll(){
           document.querySelectorAll('#awaySwatches .swatch').forEach(s=>s.classList.toggle('sel', s===sw));
         }
         applyTeamColors(setupHomeColor, setupAwayColor);
+      };
+    });
+    document.querySelectorAll('[data-venue]').forEach(btn=>{
+      btn.onclick = ()=>{
+        setupVenue = btn.dataset.venue;
+        document.querySelectorAll('[data-venue]').forEach(b=>b.classList.toggle('sel', b===btn));
       };
     });
   }
