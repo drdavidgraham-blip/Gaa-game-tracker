@@ -146,6 +146,7 @@
   .tap-btn.away{background:var(--away); color:var(--away-text);}
   .tap-btn.wide-home{background:var(--surface-2); color:var(--home-accent); border:1px solid var(--home);}
   .tap-btn.wide-away{background:var(--surface-2); color:var(--away-accent); border:1px solid var(--away);}
+  .tap-btn.save-btn{background:#1c2a23; color:#7cc7ff; border:1px dashed #4a7fb5;}
 
   .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
   .tap-btn.neutral{background:var(--neutral); color:var(--text); border:1px solid var(--border);}
@@ -282,6 +283,7 @@ const EVENT_LABELS = {
   turnoverFor:'Turnover Won', turnoverAgainst:'Turnover Lost',
   freeWonAdvanced:'Free Won \u2013 Ball Advanced', freeConcededAdvanced:'Free Conceded \u2013 Ball Advanced (Against)',
   fortyFive:'45 Kick',
+  keeperSave:'Keeper Save',
   yellowCard:'Yellow Card', blackCard:'Black Card', redCard:'Red Card'
 };
 
@@ -542,6 +544,7 @@ function homeExtra(s=state){
     foulConceded:c('foulConceded'), foulWon:c('foulWon'),
     overCarryFor:ct('overCarry','home'), overCarryAgainst:ct('overCarry','away'),
     fortyFiveFor:ct('fortyFive','home'), fortyFiveAgainst:ct('fortyFive','away'),
+    keeperSaveFor:ct('keeperSave','home'), keeperSaveAgainst:ct('keeperSave','away'),
     turnoverFor:c('turnoverFor'), turnoverAgainst:c('turnoverAgainst'),
     freeWonAdvanced:c('freeWonAdvanced'), freeConcededAdvanced:c('freeConcededAdvanced')
   };
@@ -678,6 +681,7 @@ function buildSummaryText(s=state){
   t += 'Fouls won: ' + ex.foulWon + '  |  Fouls conceded: ' + ex.foulConceded + '\n';
   t += 'Over carry won: ' + ex.overCarryFor + '  |  Over carry against: ' + ex.overCarryAgainst + '\n';
   t += '45s for: ' + ex.fortyFiveFor + '  |  45s against: ' + ex.fortyFiveAgainst + '\n';
+  t += 'Keeper saves - ours: ' + ex.keeperSaveFor + '  |  theirs: ' + ex.keeperSaveAgainst + '\n';
   t += 'Turnovers won: ' + ex.turnoverFor + '  |  Turnovers lost: ' + ex.turnoverAgainst + '\n';
   t += 'Free won - ball advanced: ' + ex.freeWonAdvanced + '  |  Free conceded - ball advanced against: ' + ex.freeConcededAdvanced + '\n';
   t += '\nCARDS\n';
@@ -703,6 +707,218 @@ async function shareText(text, title){
   }
   showTextModal(title, text);
 }
+
+/* ============================ IMAGE SUMMARY ============================ */
+/* Draw a tall portrait summary card onto a canvas and share/download as PNG. */
+function drawSummaryCard(s=state){
+  const DPR = 2;                 // crisp on retina
+  const W = 540;                 // logical width
+  const M = 28;                  // side margin
+  const homeCol = s.homeColor, awayCol = s.awayColor;
+  const h = teamStats('home', s), a = teamStats('away', s);
+  const ex = homeExtra(s);
+  const pAll = possessionTime(null, s), p1 = possessionTime(1, s), p2 = possessionTime(2, s);
+  const hasH1 = s.events.some(e=>e.half===1);
+  const hasH2 = s.events.some(e=>e.half===2);
+
+  // ---- measure required height first ----
+  let H = 0;
+  H += 150;                      // header + score
+  H += 96;                       // possession bars block
+  if(hasH1) H += 150;            // timeline H1
+  if(hasH2) H += 150;            // timeline H2
+  H += 250;                      // key stats block
+  H += 40;                       // footer
+
+  const cv = document.createElement('canvas');
+  cv.width = W*DPR; cv.height = H*DPR;
+  const ctx = cv.getContext('2d');
+  ctx.scale(DPR,DPR);
+  const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+
+  // background
+  ctx.fillStyle = '#0a0f0c'; ctx.fillRect(0,0,W,H);
+
+  let y = 0;
+
+  // ---- Header ----
+  ctx.textAlign='center';
+  ctx.fillStyle='#8da39a'; ctx.font=`600 13px ${FONT}`;
+  ctx.fillText('GAA MATCH TRACKER · ' + venueLabel(s).toUpperCase() + ' GAME', W/2, 30);
+
+  // team names + score
+  y = 74;
+  ctx.textAlign='left';  ctx.fillStyle=homeCol; ctx.font=`800 22px ${FONT}`;
+  ctx.fillText(clip(ctx, s.homeName, W/2-70), M, y);
+  ctx.textAlign='right'; ctx.fillStyle=awayCol;
+  ctx.fillText(clip(ctx, s.awayName, W/2-70), W-M, y);
+
+  ctx.textAlign='center'; ctx.fillStyle='#8da39a'; ctx.font=`600 14px ${FONT}`;
+  ctx.fillText('vs', W/2, y-6);
+
+  y = 122;
+  ctx.textAlign='left';  ctx.fillStyle='#eef5f1'; ctx.font=`800 40px ${FONT}`;
+  ctx.fillText(scoreNotation(h), M, y);
+  ctx.textAlign='right';
+  ctx.fillText(scoreNotation(a), W-M, y);
+  ctx.textAlign='center'; ctx.fillStyle='#8da39a'; ctx.font=`600 13px ${FONT}`;
+  ctx.fillText(h.total + ' – ' + a.total + ' pts', W/2, y-6);
+
+  y = 150;
+  // ---- Possession bars ----
+  sectionLabel(ctx, 'POSSESSION (BALL-IN-PLAY)', M, y, W);
+  y += 22;
+  const barRows = [['Overall',pAll],['1st Half',p1],['2nd Half',p2]];
+  barRows.forEach(([lbl,p])=>{
+    ctx.textAlign='left'; ctx.fillStyle='#8da39a'; ctx.font=`600 11px ${FONT}`;
+    ctx.fillText(lbl, M, y+9);
+    const bx = M+64, bw = W-M-bx-70, bh=13;
+    // bar
+    const homeW = bw*(p.homePct/100);
+    roundRect(ctx, bx, y, bw, bh, 4); ctx.fillStyle=awayCol; ctx.fill();
+    roundRect(ctx, bx, y, Math.max(0,homeW), bh, 4); ctx.fillStyle=homeCol; ctx.fill();
+    // pct labels
+    ctx.font=`700 11px ${FONT}`;
+    ctx.textAlign='left'; ctx.fillStyle=contrastText(homeCol);
+    if(homeW>34) ctx.fillText(p.homePct+'%', bx+5, y+10);
+    ctx.textAlign='right'; ctx.fillStyle='#eef5f1';
+    ctx.fillText(p.homePct+'/'+p.awayPct+'%', W-M, y+10);
+    y += 24;
+  });
+  y += 4;
+
+  // ---- Momentum timelines ----
+  if(hasH1){ sectionLabel(ctx,'MOMENTUM · 1ST HALF', M, y, W); y+=18; drawMomentumOnCanvas(ctx, 1, M, y, W-M*2, 108, s); y+=120; }
+  if(hasH2){ sectionLabel(ctx,'MOMENTUM · 2ND HALF', M, y, W); y+=18; drawMomentumOnCanvas(ctx, 2, M, y, W-M*2, 108, s); y+=120; }
+
+  // ---- Key stats ----
+  sectionLabel(ctx,'KEY STATS', M, y, W); y+=22;
+  const hc=cardStats('home',s), ac=cardStats('away',s);
+  const rows = [
+    ['Goals', h.goals, a.goals],
+    ['Points', h.points, a.points],
+    ['2-Pointers', h.twoPt, a.twoPt],
+    ['Wides', h.wides, a.wides],
+    ['Shot Accuracy', h.accuracy+'%', a.accuracy+'%'],
+    ['Kick-out Retained', ex.kickoutWon+'/'+(ex.kickoutWon+ex.kickoutLost), '—'],
+    ['Turnovers (W/L)', ex.turnoverFor+'/'+ex.turnoverAgainst, '—'],
+    ['Frees Won/Conceded', ex.foulWon+'/'+ex.foulConceded, '—'],
+    ['Keeper Saves', ex.keeperSaveFor, ex.keeperSaveAgainst],
+    ['Cards (Y/B/R)', hc.yellow+'/'+hc.black+'/'+hc.red, ac.yellow+'/'+ac.black+'/'+ac.red],
+  ];
+  ctx.font=`600 12px ${FONT}`;
+  rows.forEach((r,i)=>{
+    if(i%2===0){ ctx.fillStyle='#141d18'; ctx.fillRect(M, y-13, W-M*2, 21); }
+    ctx.textAlign='left';  ctx.fillStyle='#8da39a'; ctx.fillText(r[0], M+6, y+2);
+    ctx.textAlign='center';ctx.fillStyle=homeCol; ctx.font=`700 12px ${FONT}`;
+    ctx.fillText(String(r[1]), W/2+70, y+2);
+    ctx.textAlign='right'; ctx.fillStyle=(r[2]==='—')?'#3a4f47':awayCol;
+    ctx.fillText(String(r[2]), W-M-6, y+2);
+    ctx.font=`600 12px ${FONT}`;
+    y += 21;
+  });
+
+  // footer
+  y += 18;
+  ctx.textAlign='center'; ctx.fillStyle='#5a6f66'; ctx.font=`500 10px ${FONT}`;
+  const dur = (s.half1Duration!=null?fmtMMSS(s.half1Duration):'-') + ' + ' + (s.half2Duration!=null?fmtMMSS(s.half2Duration):'-');
+  ctx.fillText('Halves: '+dur+'   ·   Possession by turnovers logged', W/2, y);
+
+  return cv;
+}
+
+// helper: draw a section label with underline
+function sectionLabel(ctx, text, x, y, W){
+  const FONT="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+  ctx.textAlign='left'; ctx.fillStyle='#8da39a'; ctx.font=`700 11px ${FONT}`;
+  ctx.fillText(text, x, y+8);
+  ctx.strokeStyle='#2a3a32'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(x, y+14); ctx.lineTo(W-x, y+14); ctx.stroke();
+}
+function roundRect(ctx,x,y,w,h,r){
+  r=Math.min(r,w/2,h/2); ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function clip(ctx, str, maxW){
+  if(ctx.measureText(str).width<=maxW) return str;
+  let s=str;
+  while(s.length>1 && ctx.measureText(s+'…').width>maxW) s=s.slice(0,-1);
+  return s+'…';
+}
+// draw a momentum curve into a rect on the canvas
+function drawMomentumOnCanvas(ctx, half, x, y, w, hgt, s){
+  const FONT="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+  const homeCol=s.homeColor, awayCol=s.awayColor;
+  // panel bg
+  roundRect(ctx,x,y,w,hgt,8); ctx.fillStyle='#141d18'; ctx.fill();
+  const curve = possessionCurve(half, s);
+  const padX=8, padY=10, midY=y+hgt/2, usableH=(hgt-padY*2)/2, usableW=w-padX*2;
+  const endSec=Math.max(curve.endSec,1);
+  const xOf=t=>x+padX+(t/endSec)*usableW;
+  const yOf=lead=>midY-(lead/curve.peak)*usableH;
+  // gridlines 5-min
+  ctx.strokeStyle='#243029'; ctx.lineWidth=1; ctx.setLineDash([2,3]);
+  ctx.fillStyle='#5a6f66'; ctx.font=`500 8px ${FONT}`; ctx.textAlign='center';
+  for(let m=5;m*60<endSec;m+=5){ const gx=xOf(m*60);
+    ctx.beginPath(); ctx.moveTo(gx,y+padY); ctx.lineTo(gx,y+hgt-padY); ctx.stroke();
+    ctx.fillText(m+"'", gx, y+hgt-2);
+  }
+  ctx.setLineDash([]);
+  // mid line
+  ctx.strokeStyle='#3a4f47'; ctx.beginPath(); ctx.moveTo(x+padX,midY); ctx.lineTo(x+w-padX,midY); ctx.stroke();
+  // curve, split colour by sign via clipping into top/bottom halves
+  if(curve.pts.length>1){
+    // top half (home colour)
+    ctx.save(); ctx.beginPath(); ctx.rect(x,y,w,midY-y); ctx.clip();
+    strokeCurve(ctx,curve,xOf,yOf,homeCol); ctx.restore();
+    // bottom half (away colour)
+    ctx.save(); ctx.beginPath(); ctx.rect(x,midY,w,y+hgt-midY); ctx.clip();
+    strokeCurve(ctx,curve,xOf,yOf,awayCol); ctx.restore();
+  }
+  // markers
+  curve.markers.forEach(mk=>{
+    const mx=xOf(mk.t); const my = mk.team==='home'? y+padY+6 : y+hgt-padY-6;
+    const col = mk.team==='home'?homeCol:awayCol;
+    ctx.beginPath(); ctx.arc(mx,my,mk.type==='goal'?6:5,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+    ctx.fillStyle=contrastText(col); ctx.font=`700 ${mk.type==='fortyFive'?6:8}px ${FONT}`; ctx.textAlign='center';
+    ctx.fillText(mk.icon, mx, my+3);
+  });
+  // team direction labels
+  ctx.textAlign='left'; ctx.font=`700 8px ${FONT}`;
+  ctx.fillStyle=homeCol; ctx.fillText(clip(ctx,s.homeName,80)+' ▲', x+padX+2, y+padY+2);
+  ctx.fillStyle=awayCol; ctx.fillText(clip(ctx,s.awayName,80)+' ▼', x+padX+2, y+hgt-padY+2);
+}
+function strokeCurve(ctx,curve,xOf,yOf,col){
+  ctx.beginPath();
+  curve.pts.forEach((p,i)=>{ const px=xOf(p.t),py=yOf(p.lead); i===0?ctx.moveTo(px,py):ctx.lineTo(px,py); });
+  ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.lineJoin='round'; ctx.lineCap='round'; ctx.stroke();
+}
+
+async function shareSummaryImage(s=state){
+  let canvas;
+  try{
+    canvas = drawSummaryCard(s);
+  }catch(err){
+    alert('Could not generate the image. You can still use Share Summary (text).');
+    return;
+  }
+  const fname = (s.homeName+' v '+s.awayName).replace(/[^\w ]+/g,'').slice(0,40)+'.png';
+  canvas.toBlob(async (blob)=>{
+    if(!blob){ alert('Image generation failed.'); return; }
+    const file = new File([blob], fname, {type:'image/png'});
+    // Try native share with the file
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file], title:'Match Summary'}); return; }catch(e){ /* fall through to download */ }
+    }
+    // Fallback: open/download the image
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }, 'image/png');
+}
 function fmtHistoryDate(iso){
   const d = new Date(iso);
   return d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'}) + ' ' +
@@ -724,6 +940,7 @@ function renderHistoryRows(){
       </div>
       <div style="display:flex; gap:6px; margin-top:6px; width:100%;">
         <button class="hist-share" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Summary</button>
+        <button class="hist-image" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Image</button>
         <button class="hist-log" data-id="${rec.id}" style="flex:1; padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-weight:700; font-size:12px; cursor:pointer;">Log</button>
         <button class="hist-delete" data-id="${rec.id}" style="padding:8px 12px; border-radius:8px; border:1px solid var(--neg-border); background:transparent; color:var(--neg-border); font-weight:700; font-size:12px; cursor:pointer;">Delete</button>
       </div>
@@ -741,6 +958,12 @@ function bindHistoryActions(container, onChange){
     btn.onclick = ()=>{
       const rec = loadHistory().find(r=>r.id===Number(btn.dataset.id));
       if(rec) shareText(buildLogText(rec.state), 'Match Event Log');
+    };
+  });
+  container.querySelectorAll('.hist-image').forEach(btn=>{
+    btn.onclick = ()=>{
+      const rec = loadHistory().find(r=>r.id===Number(btn.dataset.id));
+      if(rec) shareSummaryImage(rec.state);
     };
   });
   container.querySelectorAll('.hist-delete').forEach(btn=>{
@@ -922,6 +1145,7 @@ function renderScoreTab(){
         <button class="tap-btn home" data-action="twoPt" data-team="home">2-PT<small>+2</small></button>
         <button class="tap-btn wide-home" data-action="wide" data-team="home">WIDE</button>
         <button class="tap-btn wide-home" data-action="fortyFive" data-team="home">45<small>For</small></button>
+        <button class="tap-btn save-btn" data-action="keeperSave" data-team="home">🧤 SAVE<small>Our keeper</small></button>
       </div>
     </div>
     <div>
@@ -932,6 +1156,7 @@ function renderScoreTab(){
         <button class="tap-btn away" data-action="twoPt" data-team="away">2-PT<small>+2</small></button>
         <button class="tap-btn wide-away" data-action="wide" data-team="away">WIDE</button>
         <button class="tap-btn wide-away" data-action="fortyFive" data-team="away">45<small>Against</small></button>
+        <button class="tap-btn save-btn" data-action="keeperSave" data-team="away">🧤 SAVE<small>Their keeper</small></button>
       </div>
     </div>
   </div>`;
@@ -1152,6 +1377,7 @@ function renderStatsTab(){
     <tr><td>Fouls Won / Conceded</td><td>${ex.foulWon} / ${ex.foulConceded}</td></tr>
     <tr><td>Over Carry (Won / Against)</td><td>${ex.overCarryFor} / ${ex.overCarryAgainst}</td></tr>
     <tr><td>45s (For / Against)</td><td>${ex.fortyFiveFor} / ${ex.fortyFiveAgainst}</td></tr>
+    <tr><td>Keeper Saves (Ours / Theirs)</td><td>${ex.keeperSaveFor} / ${ex.keeperSaveAgainst}</td></tr>
     <tr><td>Turnovers Won / Lost</td><td>${ex.turnoverFor} / ${ex.turnoverAgainst}</td></tr>
     <tr><td>Frees \u2013 Ball Advanced (For / Against)</td><td>${ex.freeWonAdvanced} / ${ex.freeConcededAdvanced}</td></tr>
   </table>
@@ -1180,6 +1406,7 @@ function renderStatsTab(){
   </div>
 
   <div class="section-title">Share</div>
+  <button class="big-btn" style="max-width:none; margin-bottom:8px;" id="shareImageBtn">🖼️ Share Visual Summary (Image)</button>
   <div class="share-row">
     <button id="shareSummaryBtn">📄 Share Summary</button>
     <button id="shareLogBtn">📋 Share Event Log</button>
@@ -1324,6 +1551,8 @@ function bindAll(){
   // share / match actions
   const shareSummaryBtn = document.getElementById('shareSummaryBtn');
   if(shareSummaryBtn) shareSummaryBtn.onclick = ()=>shareText(buildSummaryText(), 'Match Summary');
+  const shareImageBtn = document.getElementById('shareImageBtn');
+  if(shareImageBtn) shareImageBtn.onclick = ()=>shareSummaryImage();
   const shareLogBtn = document.getElementById('shareLogBtn');
   if(shareLogBtn) shareLogBtn.onclick = ()=>shareText(buildLogText(), 'Match Event Log');
   const newMatchBtn = document.getElementById('newMatchBtn');
