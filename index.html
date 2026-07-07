@@ -136,7 +136,7 @@
 
   /* generic tap buttons */
   .tap-btn{
-    border:none; border-radius:var(--radius); padding:18px 8px; font-size:15px; font-weight:700;
+    border:none; border-radius:var(--radius); padding:15px 8px; font-size:15px; font-weight:700;
     cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:2px; line-height:1.15;
     transition:transform .06s ease, filter .06s ease;
   }
@@ -284,6 +284,7 @@ const EVENT_LABELS = {
   freeWonAdvanced:'Free Won \u2013 Ball Advanced', freeConcededAdvanced:'Free Conceded \u2013 Ball Advanced (Against)',
   fortyFive:'45 Kick',
   keeperSave:'Keeper Save',
+  throwInWon:'Throw-in Won', throwInLost:'Throw-in Lost',
   yellowCard:'Yellow Card', blackCard:'Black Card', redCard:'Red Card'
 };
 
@@ -300,7 +301,27 @@ function defaultState(homeName, awayName, homeColor, awayColor, venue){
   };
 }
 
-function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+let _saveFailed = false;
+function save(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if(_saveFailed){ _saveFailed=false; hideSaveWarning(); }
+  }catch(e){
+    if(!_saveFailed){ _saveFailed=true; showSaveWarning(); }
+  }
+}
+function showSaveWarning(){
+  if(document.getElementById('saveWarnBanner')) return;
+  const b=document.createElement('div');
+  b.id='saveWarnBanner';
+  b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99;background:#7a1f1f;color:#fff;font-size:12px;font-weight:700;text-align:center;padding:8px;';
+  b.textContent='⚠️ Storage failed — data may not persist if you close the app. Check free space / not in private mode.';
+  document.body.appendChild(b);
+}
+function hideSaveWarning(){
+  const b=document.getElementById('saveWarnBanner');
+  if(b) b.remove();
+}
 function load(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -356,7 +377,8 @@ const POSS_START = {
   kickoutWon:'home', kickoutLost:'away',
   oppKickoutWon:'home', oppKickoutLost:'away',
   foulWon:'home', foulConceded:'away',
-  freeWonAdvanced:'home', freeConcededAdvanced:'away'
+  freeWonAdvanced:'home', freeConcededAdvanced:'away',
+  throwInWon:'home', throwInLost:'away'
 };
 const POSS_DEAD = ['wide','point','goal','twoPt','fortyFive'];
 const KICKOUT_TYPES = ['kickoutWon','kickoutLost','oppKickoutWon','oppKickoutLost'];
@@ -545,6 +567,7 @@ function homeExtra(s=state){
     overCarryFor:ct('overCarry','home'), overCarryAgainst:ct('overCarry','away'),
     fortyFiveFor:ct('fortyFive','home'), fortyFiveAgainst:ct('fortyFive','away'),
     keeperSaveFor:ct('keeperSave','home'), keeperSaveAgainst:ct('keeperSave','away'),
+    throwInWon:c('throwInWon'), throwInLost:c('throwInLost'),
     turnoverFor:c('turnoverFor'), turnoverAgainst:c('turnoverAgainst'),
     freeWonAdvanced:c('freeWonAdvanced'), freeConcededAdvanced:c('freeConcededAdvanced')
   };
@@ -561,7 +584,17 @@ function cardStats(team, s=state){
 
 
 /* ============================ ACTIONS ============================ */
+/* Double-tap guard: ignore a repeat of the SAME action+team within 600ms.
+   Protects against accidental double-presses (gloves, rain, nerves) that
+   would silently corrupt score and possession. */
+let _lastTap = {key:'', at:0};
 function recordEvent(type, team=null, jersey=null){
+  const now = Date.now();
+  const key = type + '|' + (team||'');
+  if(key === _lastTap.key && (now - _lastTap.at) < 600){
+    return; // swallowed duplicate tap — no vibration, no event
+  }
+  _lastTap = {key, at:now};
   const elapsedSec = Math.floor(getElapsedMs()/1000);
   state.events.push({id:state.nextId++, half:state.half, time:elapsedSec, team, type, jersey: jersey||null});
   save(); vibrate(); render();
@@ -606,9 +639,25 @@ function startTicker(){
     const el = document.getElementById('sbClock');
     if(el) el.textContent = fmtTime(getElapsedMs());
   }, 1000);
+  acquireWakeLock();
 }
 function stopTicker(){
   if(clockTickHandle){ clearInterval(clockTickHandle); clockTickHandle=null; }
+  releaseWakeLock();
+}
+
+/* ---- screen wake lock: keep display on while the match clock runs ---- */
+let _wakeLock = null;
+async function acquireWakeLock(){
+  try{
+    if('wakeLock' in navigator && !_wakeLock){
+      _wakeLock = await navigator.wakeLock.request('screen');
+      _wakeLock.addEventListener('release', ()=>{ _wakeLock = null; });
+    }
+  }catch(e){ /* not supported or denied — clock still works, screen may sleep */ }
+}
+function releaseWakeLock(){
+  try{ if(_wakeLock){ _wakeLock.release(); _wakeLock=null; } }catch(e){}
 }
 function clearMatch(){
   localStorage.removeItem(STORAGE_KEY);
@@ -982,6 +1031,54 @@ function bindHistoryActions(container, onChange){
     }
   };
 }
+/* Edit an event's type/team while preserving its timestamp and half.
+   Keeps corrections faithful in the log and possession replay. */
+function showEditEventModal(id){
+  const ev = state.events.find(e=>e.id===id);
+  if(!ev) return;
+  const options = Object.keys(EVENT_LABELS).map(t=>
+    `<option value="${t}" ${t===ev.type?'selected':''}>${EVENT_LABELS[t]}</option>`).join('');
+  const overlay = document.createElement('div');
+  overlay.className='overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h2>Edit event · ${fmtTime(ev.time*1000)} (H${ev.half})</h2>
+    <div class="field" style="max-width:none; margin-bottom:12px;">
+      <label>Event type</label>
+      <select id="editEvType" style="background:var(--surface-2); border:1px solid var(--border); color:var(--text); padding:12px; border-radius:8px; font-size:15px; width:100%;">${options}</select>
+    </div>
+    <div class="field" style="max-width:none; margin-bottom:12px;">
+      <label>Team</label>
+      <div class="team-toggle">
+        <button id="editEvHome" class="${ev.team==='home'?'sel home':''}">${escapeHtml(state.homeName)}</button>
+        <button id="editEvAway" class="${ev.team==='away'?'sel away':''}">${escapeHtml(state.awayName)}</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="cancel" id="editEvCancel">Cancel</button>
+      <button class="confirm" id="editEvSave">Save</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  let selTeam = ev.team;
+  document.getElementById('editEvHome').onclick = ()=>{
+    selTeam='home';
+    document.getElementById('editEvHome').className='sel home';
+    document.getElementById('editEvAway').className='';
+  };
+  document.getElementById('editEvAway').onclick = ()=>{
+    selTeam='away';
+    document.getElementById('editEvAway').className='sel away';
+    document.getElementById('editEvHome').className='';
+  };
+  document.getElementById('editEvCancel').onclick = ()=>overlay.remove();
+  document.getElementById('editEvSave').onclick = ()=>{
+    ev.type = document.getElementById('editEvType').value;
+    ev.team = selTeam;
+    overlay.remove();
+    save(); render();
+  };
+}
+
 function showTextModal(title, text){
   const overlay = document.createElement('div');
   overlay.className='overlay';
@@ -1048,6 +1145,7 @@ function renderScoreboard(){
         <div class="clock-controls">
           <button id="clockToggleBtn" class="${state.clockRunning?'active':''}">${state.clockRunning?'⏸ Pause':'▶ Start'}</button>
           <button id="endHalfBtn">${state.half===1 ? 'End H1' : (state.matchEnded ? 'Ended' : 'End Match')}</button>
+          <button id="sbUndoBtn" ${state.events.length===0?'disabled':''} title="Undo last event">↩</button>
         </div>
       </div>
       <div class="sb-team away">
@@ -1145,7 +1243,6 @@ function renderScoreTab(){
         <button class="tap-btn home" data-action="twoPt" data-team="home">2-PT<small>+2</small></button>
         <button class="tap-btn wide-home" data-action="wide" data-team="home">WIDE</button>
         <button class="tap-btn wide-home" data-action="fortyFive" data-team="home">45<small>For</small></button>
-        <button class="tap-btn save-btn" data-action="keeperSave" data-team="home">🧤 SAVE<small>Our keeper</small></button>
       </div>
     </div>
     <div>
@@ -1156,14 +1253,22 @@ function renderScoreTab(){
         <button class="tap-btn away" data-action="twoPt" data-team="away">2-PT<small>+2</small></button>
         <button class="tap-btn wide-away" data-action="wide" data-team="away">WIDE</button>
         <button class="tap-btn wide-away" data-action="fortyFive" data-team="away">45<small>Against</small></button>
-        <button class="tap-btn save-btn" data-action="keeperSave" data-team="away">🧤 SAVE<small>Their keeper</small></button>
       </div>
     </div>
+  </div>
+  <div class="grid-2" style="margin-top:10px;">
+    <button class="tap-btn save-btn" data-action="keeperSave" data-team="home">🧤 SAVE<small>Our keeper</small></button>
+    <button class="tap-btn save-btn" data-action="keeperSave" data-team="away">🧤 SAVE<small>Their keeper</small></button>
   </div>`;
 }
 
 function renderHomeTab(){
   return `
+  <div class="section-title">Throw-in (start of half)</div>
+  <div class="grid-2">
+    <button class="tap-btn neutral pos" data-action="throwInWon" data-team="home">Throw-in Won</button>
+    <button class="tap-btn neutral neg" data-action="throwInLost" data-team="home">Throw-in Lost</button>
+  </div>
   <div class="section-title">Kick-outs</div>
   <div class="grid-2">
     <button class="tap-btn neutral pos" data-action="kickoutWon" data-team="home">Kick-out Won</button>
@@ -1235,7 +1340,7 @@ function renderLogTab(){
     html += `<div class="log-row">
       <div class="log-time">${fmtTime(e.time*1000)}</div>
       <div class="log-dot ${dotClass}"></div>
-      <div class="log-desc">${describeEvent(e)}</div>
+      <div class="log-desc" data-editid="${e.id}" style="cursor:pointer;">${describeEvent(e)}</div>
       <button class="log-del" data-undoid="${e.id}" title="Remove">✕</button>
     </div>`;
   });
@@ -1378,6 +1483,7 @@ function renderStatsTab(){
     <tr><td>Over Carry (Won / Against)</td><td>${ex.overCarryFor} / ${ex.overCarryAgainst}</td></tr>
     <tr><td>45s (For / Against)</td><td>${ex.fortyFiveFor} / ${ex.fortyFiveAgainst}</td></tr>
     <tr><td>Keeper Saves (Ours / Theirs)</td><td>${ex.keeperSaveFor} / ${ex.keeperSaveAgainst}</td></tr>
+    <tr><td>Throw-ins (Won / Lost)</td><td>${ex.throwInWon} / ${ex.throwInLost}</td></tr>
     <tr><td>Turnovers Won / Lost</td><td>${ex.turnoverFor} / ${ex.turnoverAgainst}</td></tr>
     <tr><td>Frees \u2013 Ball Advanced (For / Against)</td><td>${ex.freeWonAdvanced} / ${ex.freeConcededAdvanced}</td></tr>
   </table>
@@ -1451,6 +1557,12 @@ function bindAll(){
       const a = document.getElementById('awayNameInput').value.trim() || 'Opposition';
       const hc = document.getElementById('homeColorInput').value || setupHomeColor;
       const ac = document.getElementById('awayColorInput').value || setupAwayColor;
+      // warn if colours are too similar to tell apart on the scoreboard/graphs
+      const c1=hexToRgb(hc), c2=hexToRgb(ac);
+      const dist=Math.sqrt((c1.r-c2.r)**2 + (c1.g-c2.g)**2 + (c1.b-c2.b)**2);
+      if(dist < 90 && !confirm('The two team colours look very similar — the scoreboard, possession bars and momentum graphs may be hard to tell apart. Start anyway?')){
+        return;
+      }
       state = defaultState(h, a, hc, ac, setupVenue);
       activeTab = 'score';
       save(); render();
@@ -1501,6 +1613,24 @@ function bindAll(){
   // clock controls
   const clockBtn = document.getElementById('clockToggleBtn');
   if(clockBtn) clockBtn.onclick = toggleClock;
+  const sbClockEl = document.getElementById('sbClock');
+  if(sbClockEl) sbClockEl.onclick = ()=>{
+    if(state.clockRunning || state.matchEnded) return; // only adjustable while paused
+    const cur = fmtTime(getElapsedMs());
+    const input = prompt('Set clock (mm:ss)', cur);
+    if(!input) return;
+    const m = input.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if(!m){ alert('Format must be mm:ss, e.g. 12:30'); return; }
+    const ms = (Number(m[1])*60 + Number(m[2]))*1000;
+    state.clockElapsed = ms;
+    save(); render();
+  };
+  const sbUndoBtn = document.getElementById('sbUndoBtn');
+  if(sbUndoBtn) sbUndoBtn.onclick = ()=>{
+    if(state.events.length===0) return;
+    const last = state.events[state.events.length-1];
+    if(confirm('Undo: ' + describeEvent(last) + '?')) undoLast();
+  };
   const endHalfBtn = document.getElementById('endHalfBtn');
   if(endHalfBtn) endHalfBtn.onclick = ()=>{
     if(state.matchEnded) return;
@@ -1534,6 +1664,10 @@ function bindAll(){
   // log undo
   document.querySelectorAll('[data-undoid]').forEach(btn=>{
     btn.onclick = ()=>undoEvent(Number(btn.dataset.undoid));
+  });
+  // tap a log description to edit the event
+  document.querySelectorAll('[data-editid]').forEach(el=>{
+    el.onclick = ()=>showEditEventModal(Number(el.dataset.editid));
   });
   // card team toggle
   document.querySelectorAll('[data-cardteam]').forEach(btn=>{
