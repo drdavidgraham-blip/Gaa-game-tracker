@@ -1263,12 +1263,16 @@ function renderScoreTab(){
 }
 
 function renderHomeTab(){
-  return `
+  // auto-hide throw-in buttons once a throw-in is logged for the current half;
+  // they reappear at the start of the next half, or if the tap is undone
+  const throwInDone = state.events.some(e=>e.half===state.half && (e.type==='throwInWon' || e.type==='throwInLost'));
+  const throwInSection = throwInDone ? '' : `
   <div class="section-title">Throw-in (start of half)</div>
   <div class="grid-2">
     <button class="tap-btn neutral pos" data-action="throwInWon" data-team="home">Throw-in Won</button>
     <button class="tap-btn neutral neg" data-action="throwInLost" data-team="home">Throw-in Lost</button>
-  </div>
+  </div>`;
+  return `${throwInSection}
   <div class="section-title">Kick-outs</div>
   <div class="grid-2">
     <button class="tap-btn neutral pos" data-action="kickoutWon" data-team="home">Kick-out Won</button>
